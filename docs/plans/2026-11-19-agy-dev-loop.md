@@ -138,7 +138,7 @@ OPTIMIZER_SCHEMA = {
 | 2 | Parser de planes y control por subtarea (`- [ ]` a `- [x]`) | `skills/agy-dev-loop/scripts/core/plan_tasks.py` | `tests/test_plan_tasks.py` | `[x]` |
 | 3 | Aislamiento `git worktree`, diff guard anti-trampa y verificador `RED` | `skills/agy-dev-loop/scripts/core/git_guard.py` | `tests/test_git_guard.py` | `[x]` |
 | 4 | Gate determinista, huella de error y escalado / circuit-breaker | `skills/agy-dev-loop/scripts/core/eval_runner.py` | `tests/test_eval_runner.py` | `[x]` |
-| 5 | Telemetría de corridas y podador de `.agents/loop/lessons.md` | `skills/agy-dev-loop/scripts/core/memory.py` | `tests/test_memory.py` | `[ ]` |
+| 5 | Telemetría de corridas y podador de `.agents/loop/lessons.md` | `skills/agy-dev-loop/scripts/core/memory.py` | `tests/test_memory.py` | `[x]` |
 | 6 | Mutador acotado de `## Reglas Aprendidas` y mini-benchmarks offline | `skills/agy-dev-loop/scripts/core/optimizer_guard.py` | `tests/test_optimizer_guard.py` | `[ ]` |
 | 7 | Scripts `inner_loop.py`, `outer_loop.py`, prompts y `SKILL.md` | `skills/agy-dev-loop/scripts/*.py` | `tests/test_workflow_contracts.py` | `[ ]` |
 
@@ -388,7 +388,7 @@ git commit -m "feat(core): add deterministic gate with reviewer short-circuit an
   - `record_run_metrics(metrics_dir: Path, metrics: RunMetrics) -> Path`
   - `should_trigger_global_optimization(metrics_dir: Path, min_runs: int = 3) -> bool`
 
-- [ ] **Step 1: Escribir stubs con `NotImplementedError` en `memory.py` y tests en `tests/test_memory.py`**
+- [x] **Step 1: Escribir stubs con `NotImplementedError` en `memory.py` y tests en `tests/test_memory.py`**
 
 ```python
 class TestMemory(unittest.TestCase):
@@ -404,19 +404,19 @@ class TestMemory(unittest.TestCase):
             self.assertLessEqual(estimate_tokens(p.read_text(encoding="utf-8")), 600)
 ```
 
-- [ ] **Step 2: Ejecutar test runner para verificar estado `RED`**
+- [x] **Step 2: Ejecutar test runner para verificar estado `RED`**
 
 Run: `python3 -m unittest tests/test_memory.py -v`
 Expected: FAIL / ERROR con `NotImplementedError: Not implemented`
 
-- [ ] **Step 3: Implementar `memory.py` con deduplicación por `symptom`/`rule` y ordenación por `(hits, last_run)` descendente antes de podar**
+- [x] **Step 3: Implementar `memory.py` con deduplicación por `symptom`/`rule` y ordenación por `(hits, last_run)` descendente antes de podar**
 
-- [ ] **Step 4: Ejecutar test runner para verificar estado `GREEN`**
+- [x] **Step 4: Ejecutar test runner para verificar estado `GREEN`**
 
 Run: `python3 -m unittest tests/test_memory.py -v`
 Expected: PASS (`OK`)
 
-- [ ] **Step 5: Commit de Task 5**
+- [x] **Step 5: Commit de Task 5**
 
 ```bash
 git add skills/agy-dev-loop/scripts/core/memory.py tests/test_memory.py
