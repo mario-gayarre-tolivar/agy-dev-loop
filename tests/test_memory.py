@@ -32,18 +32,19 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(estimate_tokens("abcd"), 1)
         self.assertEqual(estimate_tokens("a" * 80), 20)
 
-    def test_prunes_lessons_above_max_count_and_token_budget(self) -> None:
+    def test_prunes_lessons_above_max_count_with_tie_breaking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             lessons_path = Path(tmp) / ".agents" / "loop" / "lessons.md"
             self.assertEqual(load_lessons(lessons_path), [])
 
+            # 15 compact lessons with tied `hits` values to exercise `last_run` tie-breaking
             lessons = [
                 Lesson(
                     lesson_id=f"L{idx:02d}",
-                    symptom=f"Symptom {idx:02d}: " + ("detail " * 8).strip(),
-                    rule=f"Rule {idx:02d}: " + ("action " * 8).strip(),
-                    hits=idx,
-                    last_run=f"2026-11-{10 + (idx % 10):02d}",
+                    symptom=f"Compact symptom {idx:02d}",
+                    rule=f"Compact rule {idx:02d}",
+                    hits=((idx - 1) // 3) + 1,
+                    last_run=f"2026-11-{idx:02d}",
                 )
                 for idx in range(1, 16)
             ]
@@ -55,8 +56,46 @@ class MemoryTests(unittest.TestCase):
                 max_tokens_est=600,
             )
 
-            self.assertLessEqual(len(kept), 12)
-            self.assertGreater(len(kept), 0)
+            self.assertEqual(len(kept), 12)
+            file_text = lessons_path.read_text(encoding="utf-8")
+            self.assertLessEqual(estimate_tokens(file_text), 600)
+
+            expected_top = sorted(
+                lessons,
+                key=lambda item: (item.hits, item.last_run),
+                reverse=True,
+            )[:12]
+            self.assertEqual([item.lesson_id for item in kept], [item.lesson_id for item in expected_top])
+            # Among the hits=1 group (L01, L02, L03), all three are dropped by count cap (15 -> 12).
+            # Verify tied hits=2 group (L06 > L05 > L04) is ordered by last_run descending.
+            self.assertEqual([item.lesson_id for item in kept[-3:]], ["L06", "L05", "L04"])
+            self.assertEqual(load_lessons(lessons_path), kept)
+
+    def test_prunes_lessons_above_max_count_and_token_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lessons_path = Path(tmp) / ".agents" / "loop" / "lessons.md"
+
+            # 15 longer lessons whose 12-row table exceeds 600 estimated tokens
+            lessons = [
+                Lesson(
+                    lesson_id=f"L{idx:02d}",
+                    symptom=f"Symptom {idx:02d}: " + ("detail " * 18).strip(),
+                    rule=f"Rule {idx:02d}: " + ("action " * 18).strip(),
+                    hits=(idx // 2) + 1,
+                    last_run=f"2026-11-{10 + idx:02d}",
+                )
+                for idx in range(1, 16)
+            ]
+
+            kept = upsert_and_prune_lessons(
+                lessons_path,
+                lessons,
+                max_lessons=12,
+                max_tokens_est=600,
+            )
+
+            self.assertGreater(len(kept), 1)
+            self.assertLess(len(kept), 12)
 
             file_text = lessons_path.read_text(encoding="utf-8")
             self.assertLessEqual(estimate_tokens(file_text), 600)
@@ -71,6 +110,7 @@ class MemoryTests(unittest.TestCase):
             ]
             self.assertEqual([lesson.lesson_id for lesson in kept], expected_top_ids)
             self.assertEqual(kept[0].lesson_id, "L15")
+            self.assertNotIn("L01", [lesson.lesson_id for lesson in kept])
 
             reloaded = load_lessons(lessons_path)
             self.assertEqual(reloaded, kept)
