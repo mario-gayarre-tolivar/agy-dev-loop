@@ -140,7 +140,7 @@ OPTIMIZER_SCHEMA = {
 | 4 | Gate determinista, huella de error y escalado / circuit-breaker | `skills/agy-dev-loop/scripts/core/eval_runner.py` | `tests/test_eval_runner.py` | `[x]` |
 | 5 | Telemetría de corridas y podador de `.agents/loop/lessons.md` | `skills/agy-dev-loop/scripts/core/memory.py` | `tests/test_memory.py` | `[x]` |
 | 6 | Mutador acotado de `## Reglas Aprendidas` y mini-benchmarks offline | `skills/agy-dev-loop/scripts/core/optimizer_guard.py` | `tests/test_optimizer_guard.py` | `[x]` |
-| 7 | Scripts `inner_loop.py`, `outer_loop.py`, prompts y `SKILL.md` | `skills/agy-dev-loop/scripts/*.py` | `tests/test_workflow_contracts.py` | `[ ]` |
+| 7 | Scripts `inner_loop.py`, `outer_loop.py`, prompts y `SKILL.md` | `skills/agy-dev-loop/scripts/*.py` | `tests/test_workflow_contracts.py` | `[x]` |
 
 ---
 
@@ -501,7 +501,7 @@ git commit -m "feat(core): add bounded prompt rule mutator and offline Python/No
   - `EXECUTOR_SCHEMA`, `REVIEWER_SCHEMA`, `OPTIMIZER_SCHEMA` y funciones puras `build_executor_prompt(...)`, `build_reviewer_prompt(...)`, `build_optimizer_prompt(...)`
   - Punto de entrada de `inner_loop.py` y `outer_loop.py` compatible con `run_workflow` (detectando si `agent` y `phase` están inyectados por el runtime de `run_workflow` para permitir importación y test unitario limpio fuera de `run_workflow`)
 
-- [ ] **Step 1: Escribir stubs en `inner_loop.py` y `outer_loop.py`, crear plantillas en `prompts/` con marcadores `<!-- LEARNED_RULES_START -->` / `<!-- LEARNED_RULES_END -->` y escribir tests de contrato en `tests/test_workflow_contracts.py`**
+- [x] **Step 1: Escribir stubs en `inner_loop.py` y `outer_loop.py`, crear plantillas en `prompts/` con marcadores `<!-- LEARNED_RULES_START -->` / `<!-- LEARNED_RULES_END -->` y escribir tests de contrato en `tests/test_workflow_contracts.py`**
 
 ```python
 class TestWorkflowContracts(unittest.TestCase):
@@ -523,21 +523,21 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertNotIn("executor_history", prompt)
 ```
 
-- [ ] **Step 2: Ejecutar test runner para verificar estado `RED`**
+- [x] **Step 2: Ejecutar test runner para verificar estado `RED`**
 
 Run: `python3 -m unittest tests/test_workflow_contracts.py -v`
 Expected: FAIL / ERROR con `NotImplementedError: Not implemented`
 
-- [ ] **Step 3: Implementar `inner_loop.py`, `outer_loop.py`, `prompts/*.md` y `skills/agy-dev-loop/SKILL.md`**
+- [x] **Step 3: Implementar `inner_loop.py`, `outer_loop.py`, `prompts/*.md` y `skills/agy-dev-loop/SKILL.md`**
 
 Asegurar que `inner_loop.py` inserta `Path(__file__).resolve().parent` en `sys.path`, valida `.agents/loop.json`, crea el `git worktree`, procesa cada subtarea pendiente con cortocircuito del Revisor LLM, aplica `rollback_to_ref` ante fallo y registra métricas + `lessons.md` al terminar.
 
-- [ ] **Step 4: Ejecutar la suite completa en `python3` (3.12) y `python` (3.15) para verificar estado `GREEN`**
+- [x] **Step 4: Ejecutar la suite completa en `python3` (3.12) y `python` (3.15) para verificar estado `GREEN`**
 
 Run: `python3 -m unittest discover -s tests -v && python -m unittest discover -s tests -v`
 Expected: PASS (`OK` en todas las suites de `tests/` en ambos intérpretes)
 
-- [ ] **Step 5: Commit de Task 7**
+- [x] **Step 5: Commit de Task 7**
 
 ```bash
 git add skills/agy-dev-loop/ tests/test_workflow_contracts.py docs/plans/2026-11-19-agy-dev-loop.md
