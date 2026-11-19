@@ -137,7 +137,7 @@ OPTIMIZER_SCHEMA = {
 | 1 | Manifiesto `.agents/loop.json` y modo `init` con `dry-run` | `skills/agy-dev-loop/scripts/core/manifest.py` | `tests/test_manifest.py` | `[x]` |
 | 2 | Parser de planes y control por subtarea (`- [ ]` a `- [x]`) | `skills/agy-dev-loop/scripts/core/plan_tasks.py` | `tests/test_plan_tasks.py` | `[x]` |
 | 3 | Aislamiento `git worktree`, diff guard anti-trampa y verificador `RED` | `skills/agy-dev-loop/scripts/core/git_guard.py` | `tests/test_git_guard.py` | `[x]` |
-| 4 | Gate determinista, huella de error y escalado / circuit-breaker | `skills/agy-dev-loop/scripts/core/eval_runner.py` | `tests/test_eval_runner.py` | `[ ]` |
+| 4 | Gate determinista, huella de error y escalado / circuit-breaker | `skills/agy-dev-loop/scripts/core/eval_runner.py` | `tests/test_eval_runner.py` | `[x]` |
 | 5 | Telemetría de corridas y podador de `.agents/loop/lessons.md` | `skills/agy-dev-loop/scripts/core/memory.py` | `tests/test_memory.py` | `[ ]` |
 | 6 | Mutador acotado de `## Reglas Aprendidas` y mini-benchmarks offline | `skills/agy-dev-loop/scripts/core/optimizer_guard.py` | `tests/test_optimizer_guard.py` | `[ ]` |
 | 7 | Scripts `inner_loop.py`, `outer_loop.py`, prompts y `SKILL.md` | `skills/agy-dev-loop/scripts/*.py` | `tests/test_workflow_contracts.py` | `[ ]` |
@@ -329,7 +329,7 @@ git commit -m "feat(core): add git worktree isolation, test diff guard, and RED 
   - `run_deterministic_gate(worktree_path: Path, manifest: LoopManifest, base_ref: str, verify_red: bool = True) -> GateResult`
   - `decide_next_action(current_tier: str, consecutive_failures: int, previous_fingerprints: list[str], new_fingerprint: str, circuit_breaker: int = 3) -> str` (devuelve `"continue_flash"`, `"escalate_pro"` o `"abort_circuit_breaker"`)
 
-- [ ] **Step 1: Escribir stubs con `NotImplementedError` en `eval_runner.py` y tests en `tests/test_eval_runner.py`**
+- [x] **Step 1: Escribir stubs con `NotImplementedError` en `eval_runner.py` y tests en `tests/test_eval_runner.py`**
 
 ```python
 class TestEvalRunner(unittest.TestCase):
@@ -348,21 +348,21 @@ class TestEvalRunner(unittest.TestCase):
         self.assertEqual(action, "escalate_pro")
 ```
 
-- [ ] **Step 2: Ejecutar test runner para verificar estado `RED`**
+- [x] **Step 2: Ejecutar test runner para verificar estado `RED`**
 
 Run: `python3 -m unittest tests/test_eval_runner.py -v`
 Expected: FAIL / ERROR con `NotImplementedError: Not implemented`
 
-- [ ] **Step 3: Implementar `compute_error_fingerprint`, `run_deterministic_gate` y `decide_next_action` en `skills/agy-dev-loop/scripts/core/eval_runner.py`**
+- [x] **Step 3: Implementar `compute_error_fingerprint`, `run_deterministic_gate` y `decide_next_action` en `skills/agy-dev-loop/scripts/core/eval_runner.py`**
 
 Ejecutar en orden: `check_protected_tests_diff`, `verify_new_tests_fail_without_prod_changes` (si `verify_red=True`), `manifest.test_cmd`, `manifest.lint_cmd` y `manifest.build_cmd`. Cortocircuitar al primer fallo con `should_run_reviewer=False`. Solo si todos pasan, devolver `passed=True, should_run_reviewer=True`.
 
-- [ ] **Step 4: Ejecutar test runner para verificar estado `GREEN`**
+- [x] **Step 4: Ejecutar test runner para verificar estado `GREEN`**
 
 Run: `python3 -m unittest tests/test_eval_runner.py -v`
 Expected: PASS (`OK`)
 
-- [ ] **Step 5: Commit de Task 4**
+- [x] **Step 5: Commit de Task 4**
 
 ```bash
 git add skills/agy-dev-loop/scripts/core/eval_runner.py tests/test_eval_runner.py
