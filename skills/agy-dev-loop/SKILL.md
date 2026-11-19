@@ -32,7 +32,7 @@ manifest_path = init_manifest(Path("<repo-root>"), run_dry_check=True)
 - `protected_test_globs` (default: `["tests/**", "test/**", "**/*.test.*", "**/*.spec.*"]`).
 - `max_iter` (default: `5`), `circuit_breaker` (default: `3`).
 
-Commit `.agents/loop.json` (and ensure `.agents/worktrees/` and `.agents/loop/telemetry/` are in `.gitignore`) so `ensure_clean_repo` passes before launching the loop.
+Commit `.agents/loop.json` and add `.agents/worktrees/` and `.agents/loop/` to `.gitignore` so `ensure_clean_repo` passes across runs (teams that want to track `.agents/loop/lessons.md` in Git should ignore `.agents/loop/telemetry/` instead and commit `lessons.md` before the next run).
 
 ## 2. Run Inner Loop (`inner_loop.py`)
 

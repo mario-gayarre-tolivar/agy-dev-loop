@@ -173,6 +173,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("inner_loop.py", parts[2])
         self.assertIn("outer_loop.py", parts[2])
         self.assertIn("apply_approved", parts[2])
+        self.assertIn("`.agents/loop/`", parts[2])
 
     def test_reviewer_prompt_excludes_executor_conversation_history(self) -> None:
         # Verify exact required schemas
@@ -576,6 +577,57 @@ class WorkflowContractTests(unittest.TestCase):
             updated_text = executor_prompt_path.read_text(encoding="utf-8")
             self.assertIn("- [R1] Run targeted unittest before calling finish.", updated_text)
             self.assertIn("## Reglas Inmutables", updated_text)
+
+    def test_outer_loop_rejects_apply_approved_without_approved_proposal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prompts_copy = root / "prompts"
+            shutil.copytree(PROMPTS_DIR, prompts_copy)
+            metrics_dir = root / "telemetry"
+            _write_sample_metrics(metrics_dir, count=3)
+
+            before_bytes = {
+                name: (prompts_copy / name).read_bytes()
+                for name in ("executor.md", "reviewer.md")
+            }
+            agent_called = False
+
+            async def fail_if_called(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                nonlocal agent_called
+                agent_called = True
+                raise AssertionError("agent_fn must not be invoked when approved_proposal is missing")
+
+            for bad_args in (
+                {
+                    "metrics_dir": str(metrics_dir),
+                    "prompts_dir": str(prompts_copy),
+                    "benchmarks_root": str(REPO_ROOT / "benchmarks"),
+                    "apply_approved": True,
+                },
+                {
+                    "metrics_dir": str(metrics_dir),
+                    "prompts_dir": str(prompts_copy),
+                    "benchmarks_root": str(REPO_ROOT / "benchmarks"),
+                    "apply_approved": True,
+                    "approved_proposal": "not-a-dict",
+                },
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r"approved_proposal dict is required when apply_approved is True",
+                ):
+                    asyncio.run(
+                        run_outer_loop(
+                            bad_args,
+                            fail_if_called,
+                            lambda _name: None,
+                            lambda *_args: None,
+                        )
+                    )
+
+            self.assertFalse(agent_called)
+            for name, raw in before_bytes.items():
+                self.assertEqual((prompts_copy / name).read_bytes(), raw)
 
     def test_inner_loop_handles_reviewer_rejection_rollback_and_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

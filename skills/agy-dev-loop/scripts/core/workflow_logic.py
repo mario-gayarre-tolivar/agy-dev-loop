@@ -589,6 +589,8 @@ async def run_outer_loop(
         lessons_path = metrics_dir.parent / "lessons.md"
 
     apply_approved = args_dict.get("apply_approved") is True
+    if apply_approved and not isinstance(args_dict.get("approved_proposal"), dict):
+        raise ValueError("approved_proposal dict is required when apply_approved is True")
     max_rules = int(args_dict.get("max_rules", 12))
     max_tokens_est = int(args_dict.get("max_tokens_est", 600))
 
@@ -637,7 +639,7 @@ async def run_outer_loop(
         }
 
     phase_fn("Propose")
-    if apply_approved and isinstance(args_dict.get("approved_proposal"), dict):
+    if apply_approved:
         proposal = args_dict["approved_proposal"]
     else:
         optimizer_template = (prompts_dir / "optimizer.md").read_text(encoding="utf-8")
