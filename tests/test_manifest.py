@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "skills" / "agy-dev-loop" / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
@@ -182,6 +183,24 @@ class ManifestTests(unittest.TestCase):
             node_manifest = detect_stack_manifest(node_native_root)
             self.assertEqual(node_manifest.test_cmd, "node --test")
 
+            # Ignored directories like node_modules/ must be pruned and ignored
+            ignored_root = Path(tmp) / "ignored_dirs"
+            (ignored_root / "node_modules").mkdir(parents=True)
+            (ignored_root / "node_modules" / "test_fake.py").write_text("", encoding="utf-8")
+            (ignored_root / ".venv").mkdir()
+            (ignored_root / ".venv" / "test_fake.py").write_text("", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                detect_stack_manifest(ignored_root)
+
+            # *_test.py and non-test_* helper modules in tests/ must not trigger unittest
+            non_unittest_root = Path(tmp) / "non_unittest"
+            (non_unittest_root / "tests").mkdir(parents=True)
+            (non_unittest_root / "foo_test.py").write_text("", encoding="utf-8")
+            (non_unittest_root / "tests" / "bar_test.py").write_text("", encoding="utf-8")
+            (non_unittest_root / "tests" / "testutils.py").write_text("", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                detect_stack_manifest(non_unittest_root)
+
     def test_detect_and_init_manifest_verifies_dry_run_success_and_rejects_failing_command(
         self,
     ) -> None:
@@ -205,20 +224,44 @@ class ManifestTests(unittest.TestCase):
                 loaded.test_cmd, "python3 -m unittest discover -s tests -v"
             )
 
-            # Failing dry-run must raise RuntimeError and remove invalid manifest
+            # Failing dry-run must raise RuntimeError and neither create .agents/ nor clobber existing manifest
             fail_root = Path(tmp) / "fail_repo"
             (fail_root / "tests").mkdir(parents=True)
             (fail_root / "tests" / "test_fail.py").write_text(
-                "import unittest\n\n"
+                "import sys, unittest\n\n"
                 "class FailTest(unittest.TestCase):\n"
                 "    def test_fail(self):\n"
+                "        sys.stdout.buffer.write(b'\\xff\\xfeinvalid-utf8\\n')\n"
+                "        sys.stdout.flush()\n"
                 "        self.fail('boom')\n",
                 encoding="utf-8",
             )
 
+            with self.assertRaises(RuntimeError) as ctx:
+                init_manifest(fail_root, run_dry_check=True)
+            self.assertFalse((fail_root / ".agents").exists())
+            self.assertIn("boom", str(ctx.exception))
+
+            # Existing valid .agents/loop.json must remain untouched if dry-run fails
+            existing_agents = fail_root / ".agents"
+            existing_agents.mkdir()
+            existing_manifest = existing_agents / "loop.json"
+            original_content = json.dumps({"test_cmd": "pytest -q"}, indent=2) + "\n"
+            existing_manifest.write_text(original_content, encoding="utf-8")
+
             with self.assertRaises(RuntimeError):
                 init_manifest(fail_root, run_dry_check=True)
-            self.assertFalse((fail_root / ".agents" / "loop.json").exists())
+            self.assertEqual(
+                existing_manifest.read_text(encoding="utf-8"), original_content
+            )
+
+            # OSError from subprocess execution must surface as RuntimeError
+            with mock.patch(
+                "core.manifest.subprocess.run", side_effect=OSError("spawn failed")
+            ):
+                with self.assertRaises(RuntimeError) as os_err_ctx:
+                    init_manifest(ok_root, run_dry_check=True)
+                self.assertIn("spawn failed", str(os_err_ctx.exception))
 
 
 if __name__ == "__main__":

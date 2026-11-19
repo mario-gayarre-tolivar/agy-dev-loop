@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import os
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -51,11 +53,10 @@ def _require_positive_int(value: object, field_name: str) -> int:
 
 
 def _has_matching_file(root: Path, patterns: tuple[str, ...]) -> bool:
-    for pattern in patterns:
-        for path in root.rglob(pattern):
-            if path.is_file() and not any(
-                part in _IGNORED_SCAN_DIRS for part in path.relative_to(root).parts
-            ):
+    for _, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _IGNORED_SCAN_DIRS]
+        for filename in filenames:
+            if any(fnmatch.fnmatch(filename, pattern) for pattern in patterns):
                 return True
     return False
 
@@ -112,10 +113,10 @@ def detect_stack_manifest(repo_root: Path) -> LoopManifest:
         return LoopManifest(test_cmd="python3 manage.py test")
 
     tests_dir = root / "tests"
-    if tests_dir.is_dir() and _has_matching_file(tests_dir, ("test*.py", "*_test.py")):
+    if tests_dir.is_dir() and _has_matching_file(tests_dir, ("test_*.py",)):
         return LoopManifest(test_cmd="python3 -m unittest discover -s tests -v")
 
-    if _has_matching_file(root, ("test_*.py", "*_test.py")):
+    if _has_matching_file(root, ("test_*.py",)):
         return LoopManifest(test_cmd="python3 -m unittest discover -v")
 
     package_json = root / "package.json"
@@ -156,14 +157,9 @@ def detect_stack_manifest(repo_root: Path) -> LoopManifest:
 
 
 def init_manifest(repo_root: Path, run_dry_check: bool = True) -> Path:
-    """Detect stack, write `.agents/loop.json`, and optionally verify `test_cmd`."""
+    """Detect stack, verify `test_cmd` if requested, and write `.agents/loop.json`."""
     root = Path(repo_root)
     manifest = detect_stack_manifest(root)
-    manifest_path = root / ".agents" / "loop.json"
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(
-        json.dumps(asdict(manifest), indent=2) + "\n", encoding="utf-8"
-    )
 
     if run_dry_check:
         try:
@@ -173,22 +169,32 @@ def init_manifest(repo_root: Path, run_dry_check: bool = True) -> Path:
                 shell=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
-        except subprocess.TimeoutExpired as exc:
-            manifest_path.unlink(missing_ok=True)
+        except (subprocess.TimeoutExpired, OSError) as exc:
             raise RuntimeError(
-                f"Dry-run test command timed out after 60s: {manifest.test_cmd}"
+                f"Dry-run test command failed to execute ({manifest.test_cmd}): {exc}"
             ) from exc
 
         if result.returncode != 0:
-            manifest_path.unlink(missing_ok=True)
             output = "\n".join(
-                part for part in (result.stdout.strip(), result.stderr.strip()) if part
+                part
+                for part in (
+                    (result.stdout or "").strip(),
+                    (result.stderr or "").strip(),
+                )
+                if part
             )
             raise RuntimeError(
                 f"Dry-run test command failed (exit {result.returncode}): {manifest.test_cmd}"
                 + (f"\n{output}" if output else "")
             )
 
+    manifest_path = root / ".agents" / "loop.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(asdict(manifest), indent=2) + "\n", encoding="utf-8"
+    )
     return manifest_path
