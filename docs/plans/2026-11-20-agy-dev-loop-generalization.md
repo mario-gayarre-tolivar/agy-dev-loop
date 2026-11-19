@@ -173,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
 
 | Orden | Tarea | Módulos Principales | Suite de Test (`python3 -m unittest`) | Criterios Cubiertos | Estado |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Intérprete Python portable, manifiesto multi-stack y nuevos campos de `LoopManifest` | `skills/agy-dev-loop/scripts/core/manifest.py` | `tests/test_manifest.py` | `C1`, `C3`, `C5` | `[ ]` |
+| 1 | Intérprete Python portable, manifiesto multi-stack y nuevos campos de `LoopManifest` | `skills/agy-dev-loop/scripts/core/manifest.py` | `tests/test_manifest.py` | `C1`, `C3`, `C5` | `[x]` |
 | 2 | Entorno hidratado de worktree, teardown seguro y guardián anti-trampa multi-lenguaje | `skills/agy-dev-loop/scripts/core/git_guard.py`, `eval_runner.py` | `tests/test_git_guard.py`, `tests/test_eval_runner.py` | `C2`, `C3`, `C4`, `C5` | `[ ]` |
 | 3 | Benchmarks autocontenidos en la skill y dry-run aislado dentro del worktree con `setup_cmd` | `skills/agy-dev-loop/scripts/core/optimizer_guard.py`, `workflow_logic.py` | `tests/test_optimizer_guard.py`, `tests/test_workflow_contracts.py` | `C1`, `C2`, `C4` | `[ ]` |
 | 4 | CLI pública (`init`/`doctor`), documentación sin rutas personales y suite de evaluación `C1`–`C6` | `skills/agy-dev-loop/scripts/cli.py`, `SKILL.md`, `README.md` | `tests/test_generalization_eval.py` | `C1`..`C6` | `[ ]` |
@@ -190,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
 - Consumes: `sys.executable`, `shutil.which`, `re.compile`, `os.environ`, `subprocess.run`, `pathlib.Path`, `json`
 - Produces: `LoopManifest` (con `setup_cmd`, `verify_red`, `test_timeout_sec`, `assert_regex`), `DEFAULT_PROTECTED_TEST_GLOBS` ampliado, `resolve_python_cmd`, `load_manifest`, `detect_stack_manifest`, `verify_manifest_test_cmd`, `init_manifest`
 
-- [ ] **Step 1: Añadir tests fallidos (`RED`) en `tests/test_manifest.py` para `resolve_python_cmd`, nuevos campos de `LoopManifest` y detección de `pytest`, `pnpm`/`yarn`/`bun`, Go, Rust, Java y .NET**
+- [x] **Step 1: Añadir tests fallidos (`RED`) en `tests/test_manifest.py` para `resolve_python_cmd`, nuevos campos de `LoopManifest` y detección de `pytest`, `pnpm`/`yarn`/`bun`, Go, Rust, Java y .NET**
 
 ```python
 def test_detect_stack_manifest_supports_pytest_go_rust_java_dotnet_and_lockfiles(self):
@@ -207,21 +207,21 @@ def test_load_manifest_validates_new_optional_fields_and_rejects_bad_assert_rege
     ...
 ```
 
-- [ ] **Step 2: Ejecutar test runner para verificar estado `RED`**
+- [x] **Step 2: Ejecutar test runner para verificar estado `RED`**
 
 Run: `python3 -m unittest tests/test_manifest.py -v`
 Expected: FAIL / ERROR en los nuevos tests
 
-- [ ] **Step 3: Implementar `resolve_python_cmd`, los nuevos campos de `LoopManifest` y la detección multi-stack en `skills/agy-dev-loop/scripts/core/manifest.py`**
+- [x] **Step 3: Implementar `resolve_python_cmd`, los nuevos campos de `LoopManifest` y la detección multi-stack en `skills/agy-dev-loop/scripts/core/manifest.py`**
 
 Recortar espacios en cada elemento de `protected_test_globs` (`tuple(item.strip() for item in raw_globs)`), compilar `assert_regex` con `re.compile` al cargar para fallar rápido si es inválido y pasar `timeout=manifest.test_timeout_sec` y `env` opcional en `verify_manifest_test_cmd`.
 
-- [ ] **Step 4: Ejecutar test runner en `python3` y `python` para verificar estado `GREEN`**
+- [x] **Step 4: Ejecutar test runner en `python3` y `python` para verificar estado `GREEN`**
 
 Run: `python3 -m unittest tests/test_manifest.py -v && python -m unittest tests/test_manifest.py -v`
 Expected: PASS (`OK`)
 
-- [ ] **Step 5: Commit de Task 1**
+- [x] **Step 5: Commit de Task 1**
 
 ```bash
 git add skills/agy-dev-loop/scripts/core/manifest.py tests/test_manifest.py
