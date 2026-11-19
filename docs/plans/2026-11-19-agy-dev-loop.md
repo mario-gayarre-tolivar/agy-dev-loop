@@ -135,7 +135,7 @@ OPTIMIZER_SCHEMA = {
 | Orden | Tarea | Módulo Principal | Suite de Test (`python3 -m unittest`) | Estado |
 | --- | --- | --- | --- | --- |
 | 1 | Manifiesto `.agents/loop.json` y modo `init` con `dry-run` | `skills/agy-dev-loop/scripts/core/manifest.py` | `tests/test_manifest.py` | `[x]` |
-| 2 | Parser de planes y control por subtarea (`- [ ]` a `- [x]`) | `skills/agy-dev-loop/scripts/core/plan_tasks.py` | `tests/test_plan_tasks.py` | `[ ]` |
+| 2 | Parser de planes y control por subtarea (`- [ ]` a `- [x]`) | `skills/agy-dev-loop/scripts/core/plan_tasks.py` | `tests/test_plan_tasks.py` | `[x]` |
 | 3 | Aislamiento `git worktree`, diff guard anti-trampa y verificador `RED` | `skills/agy-dev-loop/scripts/core/git_guard.py` | `tests/test_git_guard.py` | `[ ]` |
 | 4 | Gate determinista, huella de error y escalado / circuit-breaker | `skills/agy-dev-loop/scripts/core/eval_runner.py` | `tests/test_eval_runner.py` | `[ ]` |
 | 5 | Telemetría de corridas y podador de `.agents/loop/lessons.md` | `skills/agy-dev-loop/scripts/core/memory.py` | `tests/test_memory.py` | `[ ]` |
@@ -220,7 +220,7 @@ git commit -m "feat(core): add project loop manifest loader and dry-run initiali
   - `next_pending_subtask(plan_path: Path) -> PlanSubtask | None`
   - `mark_subtask_completed(plan_path: Path, subtask_index: int) -> None`
 
-- [ ] **Step 1: Escribir stubs con `NotImplementedError` en `plan_tasks.py` y tests en `tests/test_plan_tasks.py`**
+- [x] **Step 1: Escribir stubs con `NotImplementedError` en `plan_tasks.py` y tests en `tests/test_plan_tasks.py`**
 
 ```python
 class TestPlanTasks(unittest.TestCase):
@@ -238,21 +238,21 @@ class TestPlanTasks(unittest.TestCase):
             self.assertEqual(second.index, 1)
 ```
 
-- [ ] **Step 2: Ejecutar test runner para verificar estado `RED`**
+- [x] **Step 2: Ejecutar test runner para verificar estado `RED`**
 
 Run: `python3 -m unittest tests/test_plan_tasks.py -v`
 Expected: FAIL / ERROR con `NotImplementedError: Not implemented`
 
-- [ ] **Step 3: Implementar `parse_plan_subtasks`, `next_pending_subtask` y `mark_subtask_completed` en `skills/agy-dev-loop/scripts/core/plan_tasks.py`**
+- [x] **Step 3: Implementar `parse_plan_subtasks`, `next_pending_subtask` y `mark_subtask_completed` en `skills/agy-dev-loop/scripts/core/plan_tasks.py`**
 
 Capturar bloques que inicien con `^\s*-\s*\[([ xX])\]\s+(.+)$` y asociar las líneas siguientes hasta el próximo checkbox o encabezado `##`/`###` como `body`. Reemplazar únicamente la línea `line_number` de la subtarea `subtask_index` al marcar `[x]`.
 
-- [ ] **Step 4: Ejecutar test runner para verificar estado `GREEN`**
+- [x] **Step 4: Ejecutar test runner para verificar estado `GREEN`**
 
 Run: `python3 -m unittest tests/test_plan_tasks.py -v`
 Expected: PASS (`OK`)
 
-- [ ] **Step 5: Commit de Task 2**
+- [x] **Step 5: Commit de Task 2**
 
 ```bash
 git add skills/agy-dev-loop/scripts/core/plan_tasks.py tests/test_plan_tasks.py
