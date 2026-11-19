@@ -174,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
 | Orden | Tarea | Módulos Principales | Suite de Test (`python3 -m unittest`) | Criterios Cubiertos | Estado |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Intérprete Python portable, manifiesto multi-stack y nuevos campos de `LoopManifest` | `skills/agy-dev-loop/scripts/core/manifest.py` | `tests/test_manifest.py` | `C1`, `C3`, `C5` | `[x]` |
-| 2 | Entorno hidratado de worktree, teardown seguro y guardián anti-trampa multi-lenguaje | `skills/agy-dev-loop/scripts/core/git_guard.py`, `eval_runner.py` | `tests/test_git_guard.py`, `tests/test_eval_runner.py` | `C2`, `C3`, `C4`, `C5` | `[ ]` |
+| 2 | Entorno hidratado de worktree, teardown seguro y guardián anti-trampa multi-lenguaje | `skills/agy-dev-loop/scripts/core/git_guard.py`, `eval_runner.py` | `tests/test_git_guard.py`, `tests/test_eval_runner.py` | `C2`, `C3`, `C4`, `C5` | `[x]` |
 | 3 | Benchmarks autocontenidos en la skill y dry-run aislado dentro del worktree con `setup_cmd` | `skills/agy-dev-loop/scripts/core/optimizer_guard.py`, `workflow_logic.py` | `tests/test_optimizer_guard.py`, `tests/test_workflow_contracts.py` | `C1`, `C2`, `C4` | `[ ]` |
 | 4 | CLI pública (`init`/`doctor`), documentación sin rutas personales y suite de evaluación `C1`–`C6` | `skills/agy-dev-loop/scripts/cli.py`, `SKILL.md`, `README.md` | `tests/test_generalization_eval.py` | `C1`..`C6` | `[ ]` |
 
@@ -242,7 +242,7 @@ git commit -m "feat(manifest): add multi-stack detection, portable Python resolu
 - Consumes: `LoopManifest` (Task 1)
 - Produces: `build_worktree_env`, `remove_isolated_worktree`, `check_protected_tests_diff(..., assert_regex=None)`, `verify_new_tests_fail_without_prod_changes(..., timeout_sec=120, env=None)` en `git_guard.py`; `run_deterministic_gate(..., verify_red=None, env=None)` en `eval_runner.py`
 
-- [ ] **Step 1: Añadir tests fallidos (`RED`) en `tests/test_git_guard.py` y `tests/test_eval_runner.py`**
+- [x] **Step 1: Añadir tests fallidos (`RED`) en `tests/test_git_guard.py` y `tests/test_eval_runner.py`**
 
 ```python
 # En tests/test_git_guard.py:
@@ -262,19 +262,19 @@ def test_gate_respects_manifest_verify_red_false_custom_assert_regex_and_env(sel
     ...
 ```
 
-- [ ] **Step 2: Ejecutar test runner para verificar estado `RED`**
+- [x] **Step 2: Ejecutar test runner para verificar estado `RED`**
 
 Run: `python3 -m unittest tests/test_git_guard.py tests/test_eval_runner.py -v`
 Expected: FAIL / ERROR en los nuevos tests
 
-- [ ] **Step 3: Implementar `build_worktree_env`, `remove_isolated_worktree`, `-c diff.mnemonicPrefix=false` y soporte multi-lenguaje en `git_guard.py` y `eval_runner.py`**
+- [x] **Step 3: Implementar `build_worktree_env`, `remove_isolated_worktree`, `-c diff.mnemonicPrefix=false` y soporte multi-lenguaje en `git_guard.py` y `eval_runner.py`**
 
-- [ ] **Step 4: Ejecutar test runner en `python3` y `python` para verificar estado `GREEN`**
+- [x] **Step 4: Ejecutar test runner en `python3` y `python` para verificar estado `GREEN`**
 
 Run: `python3 -m unittest tests/test_git_guard.py tests/test_eval_runner.py -v && python -m unittest tests/test_git_guard.py tests/test_eval_runner.py -v`
 Expected: PASS (`OK`)
 
-- [ ] **Step 5: Commit de Task 2**
+- [x] **Step 5: Commit de Task 2**
 
 ```bash
 git add skills/agy-dev-loop/scripts/core/git_guard.py skills/agy-dev-loop/scripts/core/eval_runner.py tests/test_git_guard.py tests/test_eval_runner.py
