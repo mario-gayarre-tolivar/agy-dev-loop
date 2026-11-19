@@ -117,12 +117,12 @@ def _parse_diff_counts(diff_text: str) -> dict[str, tuple[int, int]]:
             continue
         if current_file is None or line.startswith("@@"):
             continue
-        if line.startswith("-"):
-            if _ASSERT_RE.search(line[1:]):
-                counts[current_file][0] += 1
-        elif line.startswith("+"):
-            if _ASSERT_RE.search(line[1:]):
-                counts[current_file][1] += 1
+        if line.startswith(("-", "+")):
+            body = line[1:]
+            if body.lstrip().startswith(("#", "//")):
+                continue
+            if _ASSERT_RE.search(body):
+                counts[current_file][0 if line.startswith("-") else 1] += 1
 
     return {path: (pair[0], pair[1]) for path, pair in counts.items()}
 
@@ -263,10 +263,12 @@ def verify_new_tests_fail_without_prod_changes(
 
     try:
         for rel_path in tracked_in_base:
-            co = _run_git(wt, "checkout", base_ref, "--", rel_path)
-            if co.returncode != 0:
-                detail = co.stderr.strip() or co.stdout.strip()
-                raise RuntimeError(f"git checkout failed for {rel_path}: {detail}")
+            restore = _run_git(
+                wt, "restore", "--source", base_ref, "--worktree", "--", rel_path
+            )
+            if restore.returncode != 0:
+                detail = restore.stderr.strip() or restore.stdout.strip()
+                raise RuntimeError(f"git restore failed for {rel_path}: {detail}")
         for abs_path in temp_remove:
             abs_path.unlink(missing_ok=True)
 

@@ -138,6 +138,18 @@ class GitGuardTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertTrue(reason)
 
+            # Commenting out an assertion must also be rejected.
+            test_file.write_text(
+                original_content.replace(
+                    "        self.assertEqual(add(0, 0), 0)",
+                    "        # self.assertEqual(add(0, 0), 0)",
+                ),
+                encoding="utf-8",
+            )
+            ok, reason = check_protected_tests_diff(repo, base_ref, protected)
+            self.assertFalse(ok)
+            self.assertTrue(reason)
+
             # Adding assertions to existing test file must be accepted.
             test_file.write_text(
                 original_content
@@ -186,8 +198,28 @@ class GitGuardTests(unittest.TestCase):
             self.assertTrue(ok)
             self.assertEqual(calc_path.read_text(encoding="utf-8"), refactored_calc)
 
-            # 2. Tautological test + prod change -> rejected and calc.py restored identically.
-            calc_bytes = b"def add(a: int, b: int) -> int:\r\n    return a + b\r\n"
+            # 2a. Tautological test with NO prod changes (`prod_files == []`) -> rejected.
+            calc_path.write_text(orig_calc, encoding="utf-8")
+            test_path.write_text(
+                orig_test
+                + "\n    def test_tautology_no_prod(self) -> None:\n"
+                "        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            ok, reason = verify_new_tests_fail_without_prod_changes(
+                repo, base_ref, protected, test_cmd
+            )
+            self.assertFalse(ok)
+            self.assertIn("without any production change", reason)
+
+            # 2b. Tautological test + real prod change -> rejected and calc.py restored identically.
+            calc_bytes = (
+                b"def add(a: int, b: int) -> int:\r\n"
+                b"    return a + b\r\n"
+                b"\r\n"
+                b"def helper() -> int:\r\n"
+                b"    return 42\r\n"
+            )
             calc_path.write_bytes(calc_bytes)
             test_path.write_text(
                 orig_test
@@ -199,16 +231,18 @@ class GitGuardTests(unittest.TestCase):
                 repo, base_ref, protected, test_cmd
             )
             self.assertFalse(ok)
-            self.assertTrue(reason)
+            self.assertIn("Tautological", reason)
             self.assertEqual(calc_path.read_bytes(), calc_bytes)
 
-            # 3. Real test calling newly added sub(a, b) in calc.py -> accepted and restored.
+            # 3. Real test calling newly added staged sub(a, b) in calc.py -> accepted,
+            #    calc.py restored, and Git index staging preserved.
             new_calc = (
                 orig_calc
                 + "\n\ndef sub(a: int, b: int) -> int:\n"
                 "    return a - b\n"
             )
             calc_path.write_text(new_calc, encoding="utf-8")
+            _run_git(repo, "add", "calc.py")
             test_path.write_text(
                 "import unittest\n"
                 "from calc import add, sub\n\n\n"
@@ -226,6 +260,9 @@ class GitGuardTests(unittest.TestCase):
             )
             self.assertTrue(ok)
             self.assertEqual(calc_path.read_text(encoding="utf-8"), new_calc)
+            staged_files = _run_git(repo, "diff", "--cached", "--name-only").stdout.splitlines()
+            self.assertEqual(staged_files, ["calc.py"])
+            _run_git(repo, "reset", "HEAD", "--", "calc.py")
 
             # 4. Brand-new untracked prod module + brand-new test file -> accepted and restored.
             calc_path.write_text(orig_calc, encoding="utf-8")
