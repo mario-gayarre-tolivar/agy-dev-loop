@@ -136,7 +136,7 @@ OPTIMIZER_SCHEMA = {
 | --- | --- | --- | --- | --- |
 | 1 | Manifiesto `.agents/loop.json` y modo `init` con `dry-run` | `skills/agy-dev-loop/scripts/core/manifest.py` | `tests/test_manifest.py` | `[x]` |
 | 2 | Parser de planes y control por subtarea (`- [ ]` a `- [x]`) | `skills/agy-dev-loop/scripts/core/plan_tasks.py` | `tests/test_plan_tasks.py` | `[x]` |
-| 3 | Aislamiento `git worktree`, diff guard anti-trampa y verificador `RED` | `skills/agy-dev-loop/scripts/core/git_guard.py` | `tests/test_git_guard.py` | `[ ]` |
+| 3 | Aislamiento `git worktree`, diff guard anti-trampa y verificador `RED` | `skills/agy-dev-loop/scripts/core/git_guard.py` | `tests/test_git_guard.py` | `[x]` |
 | 4 | Gate determinista, huella de error y escalado / circuit-breaker | `skills/agy-dev-loop/scripts/core/eval_runner.py` | `tests/test_eval_runner.py` | `[ ]` |
 | 5 | Telemetría de corridas y podador de `.agents/loop/lessons.md` | `skills/agy-dev-loop/scripts/core/memory.py` | `tests/test_memory.py` | `[ ]` |
 | 6 | Mutador acotado de `## Reglas Aprendidas` y mini-benchmarks offline | `skills/agy-dev-loop/scripts/core/optimizer_guard.py` | `tests/test_optimizer_guard.py` | `[ ]` |
@@ -277,7 +277,7 @@ git commit -m "feat(core): add plan subtask parser and single-step checkbox upda
   - `checkpoint_commit(worktree_path: Path, message: str) -> str`
   - `rollback_to_ref(worktree_path: Path, ref: str) -> None`
 
-- [ ] **Step 1: Escribir stubs con `NotImplementedError` en `git_guard.py` y tests sobre un repo Git temporal en `tests/test_git_guard.py`**
+- [x] **Step 1: Escribir stubs con `NotImplementedError` en `git_guard.py` y tests sobre un repo Git temporal en `tests/test_git_guard.py`**
 
 ```python
 class TestGitGuard(unittest.TestCase):
@@ -292,21 +292,21 @@ class TestGitGuard(unittest.TestCase):
         ...
 ```
 
-- [ ] **Step 2: Ejecutar test runner para verificar estado `RED`**
+- [x] **Step 2: Ejecutar test runner para verificar estado `RED`**
 
 Run: `python3 -m unittest tests/test_git_guard.py -v`
 Expected: FAIL / ERROR con `NotImplementedError: Not implemented`
 
-- [ ] **Step 3: Implementar las funciones de `git_guard.py` con bloque `try / finally` en `verify_new_tests_fail_without_prod_changes`**
+- [x] **Step 3: Implementar las funciones de `git_guard.py` con bloque `try / finally` en `verify_new_tests_fail_without_prod_changes`**
 
 Garantizar que en `verify_new_tests_fail_without_prod_changes` los archivos de producción modificados se respalden en memoria antes de hacer `git checkout <base_ref> -- <prod_files>` y se restauren siempre en el bloque `finally`.
 
-- [ ] **Step 4: Ejecutar test runner para verificar estado `GREEN`**
+- [x] **Step 4: Ejecutar test runner para verificar estado `GREEN`**
 
 Run: `python3 -m unittest tests/test_git_guard.py -v`
 Expected: PASS (`OK`)
 
-- [ ] **Step 5: Commit de Task 3**
+- [x] **Step 5: Commit de Task 3**
 
 ```bash
 git add skills/agy-dev-loop/scripts/core/git_guard.py tests/test_git_guard.py
