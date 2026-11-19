@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -373,6 +374,69 @@ class EvalRunnerTests(unittest.TestCase):
                 compute_error_fingerprint(res2.output, ""),
             )
             self.assertNotEqual(res1.error_fingerprint, res2.error_fingerprint)
+
+    def test_gate_respects_manifest_verify_red_false_custom_assert_regex_and_env(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "tests").mkdir(parents=True, exist_ok=True)
+            base_ref = _init_sample_repo(repo)
+            (repo / "tests" / "custom_check.py").write_text(
+                "def run_check() -> None:\n    check_value(1, 1)\n",
+                encoding="utf-8",
+            )
+            _run_git(repo, "add", "-A")
+            _run_git(repo, "commit", "-m", "add custom check test")
+            base_ref = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+            # Add an assertion without prod changes (normally fails verify_red=True).
+            test_file = repo / "tests" / "test_calc.py"
+            test_file.write_text(
+                test_file.read_text(encoding="utf-8")
+                + "\n    def test_add_more(self) -> None:\n"
+                "        self.assertEqual(add(2, 2), 4)\n",
+                encoding="utf-8",
+            )
+
+            env_cmd = (
+                f'"{sys.executable}" -c '
+                '"import os, sys; sys.exit(0 if os.environ.get(\'AGY_CUSTOM_VAR\') == \'hydrated-ok\' else 1)"'
+            )
+            custom_env = dict(os.environ)
+            custom_env["AGY_CUSTOM_VAR"] = "hydrated-ok"
+
+            manifest_no_red = LoopManifest(
+                test_cmd=env_cmd,
+                verify_red=False,
+                test_timeout_sec=30,
+                assert_regex=r"\bcheck_value\(",
+            )
+            res_ok = run_deterministic_gate(
+                repo, manifest_no_red, base_ref, verify_red=None, env=custom_env
+            )
+            self.assertTrue(res_ok.passed, msg=res_ok.output)
+            self.assertTrue(res_ok.should_run_reviewer)
+            self.assertNotIn("[verify_red]", res_ok.output)
+
+            # Even when caller passes verify_red=True, manifest.verify_red=False disables it.
+            res_still_ok = run_deterministic_gate(
+                repo, manifest_no_red, base_ref, verify_red=True, env=custom_env
+            )
+            self.assertTrue(res_still_ok.passed, msg=res_still_ok.output)
+
+            # Custom assert_regex in manifest blocks weakening in git_guard.
+            (repo / "tests" / "custom_check.py").write_text(
+                "def run_check() -> None:\n    pass\n",
+                encoding="utf-8",
+            )
+            res_guard = run_deterministic_gate(
+                repo, manifest_no_red, base_ref, env=custom_env
+            )
+            self.assertFalse(res_guard.passed)
+            self.assertEqual(res_guard.failed_stage, "git_guard")
+            self.assertFalse(res_guard.should_run_reviewer)
+            self.assertIn("tests/custom_check.py", res_guard.output)
 
 
 if __name__ == "__main__":

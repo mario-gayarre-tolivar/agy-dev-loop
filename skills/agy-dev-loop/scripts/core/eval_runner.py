@@ -94,7 +94,12 @@ def _fail_result(
     )
 
 
-def _run_cmd_stage(worktree_path: Path, cmd: str) -> tuple[bool, str]:
+def _run_cmd_stage(
+    worktree_path: Path,
+    cmd: str,
+    timeout_sec: int = 120,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
     try:
         proc = subprocess.run(
             cmd,
@@ -104,7 +109,8 @@ def _run_cmd_stage(worktree_path: Path, cmd: str) -> tuple[bool, str]:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=120,
+            timeout=timeout_sec,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         partial = _combine_output(exc.stdout, exc.stderr)
@@ -123,7 +129,8 @@ def run_deterministic_gate(
     worktree_path: Path,
     manifest: LoopManifest,
     base_ref: str,
-    verify_red: bool = True,
+    verify_red: bool | None = None,
+    env: dict[str, str] | None = None,
 ) -> GateResult:
     """Run deterministic verification stages in strict short-circuit order."""
     wt = Path(worktree_path)
@@ -131,18 +138,29 @@ def run_deterministic_gate(
 
     try:
         ok, reason = check_protected_tests_diff(
-            wt, base_ref, manifest.protected_test_globs
+            wt,
+            base_ref,
+            manifest.protected_test_globs,
+            assert_regex=manifest.assert_regex,
         )
-    except (RuntimeError, OSError) as exc:
+    except (RuntimeError, ValueError, OSError) as exc:
         return _fail_result(wt, base_ref, "git_guard", str(exc))
     if not ok:
         return _fail_result(wt, base_ref, "git_guard", reason)
     outputs.append(f"[git_guard] {reason}")
 
-    if verify_red:
+    effective_verify_red = (
+        manifest.verify_red if verify_red is None else (verify_red and manifest.verify_red)
+    )
+    if effective_verify_red:
         try:
             ok, reason = verify_new_tests_fail_without_prod_changes(
-                wt, base_ref, manifest.protected_test_globs, manifest.test_cmd
+                wt,
+                base_ref,
+                manifest.protected_test_globs,
+                manifest.test_cmd,
+                timeout_sec=manifest.test_timeout_sec,
+                env=env,
             )
         except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
             return _fail_result(wt, base_ref, "verify_red", str(exc))
@@ -158,7 +176,9 @@ def run_deterministic_gate(
     for stage_name, cmd in cmd_stages:
         if not cmd:
             continue
-        ok, stage_output = _run_cmd_stage(wt, cmd)
+        ok, stage_output = _run_cmd_stage(
+            wt, cmd, timeout_sec=manifest.test_timeout_sec, env=env
+        )
         if not ok:
             return _fail_result(wt, base_ref, stage_name, stage_output)
         outputs.append(
