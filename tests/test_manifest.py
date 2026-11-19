@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -192,14 +194,21 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 detect_stack_manifest(ignored_root)
 
-            # *_test.py and non-test_* helper modules in tests/ must not trigger unittest
-            non_unittest_root = Path(tmp) / "non_unittest"
-            (non_unittest_root / "tests").mkdir(parents=True)
-            (non_unittest_root / "foo_test.py").write_text("", encoding="utf-8")
-            (non_unittest_root / "tests" / "bar_test.py").write_text("", encoding="utf-8")
-            (non_unittest_root / "tests" / "testutils.py").write_text("", encoding="utf-8")
+            # *_test.py triggers pytest (not unittest); non-test_* helpers alone do not trigger any stack
+            pytest_named_root = Path(tmp) / "pytest_named"
+            (pytest_named_root / "tests").mkdir(parents=True)
+            (pytest_named_root / "foo_test.py").write_text("", encoding="utf-8")
+            (pytest_named_root / "tests" / "bar_test.py").write_text("", encoding="utf-8")
+            (pytest_named_root / "tests" / "testutils.py").write_text("", encoding="utf-8")
+            pytest_named_manifest = detect_stack_manifest(pytest_named_root)
+            self.assertTrue(pytest_named_manifest.test_cmd.endswith(" -m pytest"))
+            self.assertNotIn("unittest", pytest_named_manifest.test_cmd)
+
+            helper_only_root = Path(tmp) / "helper_only"
+            (helper_only_root / "tests").mkdir(parents=True)
+            (helper_only_root / "tests" / "testutils.py").write_text("", encoding="utf-8")
             with self.assertRaises(ValueError):
-                detect_stack_manifest(non_unittest_root)
+                detect_stack_manifest(helper_only_root)
 
     def test_detect_and_init_manifest_verifies_dry_run_success_and_rejects_failing_command(
         self,
@@ -290,6 +299,225 @@ class ManifestTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 verify_manifest_test_cmd(root, failing)
             self.assertIn("bad", str(ctx.exception))
+
+    def test_resolve_python_cmd_falls_back_when_python3_missing_or_broken(self) -> None:
+        from core.manifest import resolve_python_cmd  # noqa: PLC0415
+
+        ok_proc = subprocess.CompletedProcess(args=[], returncode=0)
+        bad_proc = subprocess.CompletedProcess(args=[], returncode=9009)
+
+        # python3 available and working
+        with (
+            mock.patch("core.manifest.shutil.which", side_effect=lambda name: f"/bin/{name}"),
+            mock.patch("core.manifest.subprocess.run", return_value=ok_proc),
+        ):
+            self.assertEqual(resolve_python_cmd(), "python3")
+
+        # python3 broken (Windows Store alias exit 9009) -> falls back to python
+        def _run_python3_broken(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            return bad_proc if cmd[0] == "python3" else ok_proc
+
+        with (
+            mock.patch("core.manifest.shutil.which", side_effect=lambda name: f"/bin/{name}"),
+            mock.patch("core.manifest.subprocess.run", side_effect=_run_python3_broken),
+        ):
+            self.assertEqual(resolve_python_cmd(), "python")
+
+        # python3 missing, python raises OSError -> falls back to sys.executable (quoted if spaces)
+        with (
+            mock.patch("core.manifest.shutil.which", side_effect=lambda name: None if name == "python3" else "/bin/python"),
+            mock.patch("core.manifest.subprocess.run", side_effect=OSError("not executable")),
+            mock.patch.object(sys, "executable", r"C:\Program Files\Python312\python.exe"),
+        ):
+            self.assertEqual(resolve_python_cmd(), r'"C:\Program Files\Python312\python.exe"')
+
+        # Fallback without spaces is not quoted
+        with (
+            mock.patch("core.manifest.shutil.which", return_value=None),
+            mock.patch.object(sys, "executable", "/usr/bin/python3.12"),
+        ):
+            self.assertEqual(resolve_python_cmd(), "/usr/bin/python3.12")
+
+    def test_detect_stack_manifest_supports_pytest_go_rust_java_dotnet_and_lockfiles(
+        self,
+    ) -> None:
+        from core.manifest import DEFAULT_PROTECTED_TEST_GLOBS  # noqa: PLC0415
+
+        for expected_glob in (
+            "**/test_*.py",
+            "**/*_test.py",
+            "**/*_test.go",
+            "**/*_test.rs",
+            "**/*Test.java",
+            "**/*Tests.java",
+            "**/*Tests.cs",
+            "**/*Test.cs",
+        ):
+            self.assertIn(expected_glob, DEFAULT_PROTECTED_TEST_GLOBS)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+
+            # pyproject.toml with [tool.pytest
+            pyproject_root = base / "py_pyproject"
+            pyproject_root.mkdir()
+            (pyproject_root / "pyproject.toml").write_text(
+                "[project]\nname='demo'\n[tool.pytest.ini_options]\ntestpaths=['tests']\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(detect_stack_manifest(pyproject_root).test_cmd.endswith(" -m pytest"))
+
+            # conftest.py
+            conftest_root = base / "py_conftest"
+            conftest_root.mkdir()
+            (conftest_root / "conftest.py").write_text("", encoding="utf-8")
+            self.assertTrue(detect_stack_manifest(conftest_root).test_cmd.endswith(" -m pytest"))
+
+            # *_test.py
+            star_test_root = base / "py_star_test"
+            star_test_root.mkdir()
+            (star_test_root / "app_test.py").write_text("", encoding="utf-8")
+            self.assertTrue(detect_stack_manifest(star_test_root).test_cmd.endswith(" -m pytest"))
+
+            # Node lockfiles: pnpm, yarn, bun
+            for lockfile, pm in (
+                ("pnpm-lock.yaml", "pnpm"),
+                ("yarn.lock", "yarn"),
+                ("bun.lockb", "bun"),
+            ):
+                node_root = base / f"node_{pm}"
+                node_root.mkdir()
+                (node_root / lockfile).write_text("", encoding="utf-8")
+                (node_root / "package.json").write_text(
+                    json.dumps(
+                        {
+                            "name": f"app-{pm}",
+                            "scripts": {
+                                "test": "vitest run",
+                                "lint": "eslint .",
+                                "build": "vite build",
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                m = detect_stack_manifest(node_root)
+                self.assertEqual(m.test_cmd, f"{pm} test")
+                self.assertEqual(m.lint_cmd, f"{pm} run lint")
+                self.assertEqual(m.build_cmd, f"{pm} run build")
+
+            # Go
+            go_root = base / "go_app"
+            go_root.mkdir()
+            (go_root / "go.mod").write_text("module example.com/app\n", encoding="utf-8")
+            go_m = detect_stack_manifest(go_root)
+            self.assertEqual(go_m.test_cmd, "go test ./...")
+            self.assertEqual(go_m.build_cmd, "go build ./...")
+
+            # Rust
+            rust_root = base / "rust_app"
+            rust_root.mkdir()
+            (rust_root / "Cargo.toml").write_text("[package]\nname='app'\n", encoding="utf-8")
+            rust_m = detect_stack_manifest(rust_root)
+            self.assertEqual(rust_m.test_cmd, "cargo test")
+            self.assertEqual(rust_m.build_cmd, "cargo check")
+
+            # Java Maven
+            mvn_root = base / "mvn_app"
+            mvn_root.mkdir()
+            (mvn_root / "pom.xml").write_text("<project/>", encoding="utf-8")
+            self.assertEqual(detect_stack_manifest(mvn_root).test_cmd, "mvn test")
+
+            # Java Gradle (Kotlin DSL)
+            gradle_root = base / "gradle_app"
+            gradle_root.mkdir()
+            (gradle_root / "build.gradle.kts").write_text("", encoding="utf-8")
+            self.assertEqual(detect_stack_manifest(gradle_root).test_cmd, "gradle test")
+
+            # .NET
+            dotnet_root = base / "dotnet_app"
+            dotnet_root.mkdir()
+            (dotnet_root / "App.csproj").write_text("<Project/>", encoding="utf-8")
+            self.assertEqual(detect_stack_manifest(dotnet_root).test_cmd, "dotnet test")
+
+    def test_load_manifest_validates_new_optional_fields_and_rejects_bad_assert_regex(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agents_dir = root / ".agents"
+            agents_dir.mkdir(parents=True)
+            manifest_path = agents_dir / "loop.json"
+
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "test_cmd": "pytest",
+                        "setup_cmd": "  pip install -e .  ",
+                        "verify_red": False,
+                        "test_timeout_sec": 300,
+                        "assert_regex": "AssertionError|FAIL",
+                        "protected_test_globs": [" tests/** ", " **/*_test.py "],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = load_manifest(root)
+            self.assertEqual(manifest.setup_cmd, "pip install -e .")
+            self.assertIs(manifest.verify_red, False)
+            self.assertEqual(manifest.test_timeout_sec, 300)
+            self.assertEqual(manifest.assert_regex, "AssertionError|FAIL")
+            self.assertEqual(manifest.protected_test_globs, ("tests/**", "**/*_test.py"))
+
+            # Defaults when omitted
+            manifest_path.write_text(json.dumps({"test_cmd": "pytest"}), encoding="utf-8")
+            defaulted = load_manifest(root)
+            self.assertIsNone(defaulted.setup_cmd)
+            self.assertIs(defaulted.verify_red, True)
+            self.assertEqual(defaulted.test_timeout_sec, 120)
+            self.assertIsNone(defaulted.assert_regex)
+
+            # Invalid new fields must raise ValueError
+            for bad_payload in (
+                {"test_cmd": "pytest", "assert_regex": "[unclosed"},
+                {"test_cmd": "pytest", "assert_regex": "   "},
+                {"test_cmd": "pytest", "verify_red": "false"},
+                {"test_cmd": "pytest", "verify_red": 0},
+                {"test_cmd": "pytest", "verify_red": None},
+                {"test_cmd": "pytest", "test_timeout_sec": 0},
+                {"test_cmd": "pytest", "test_timeout_sec": -10},
+                {"test_cmd": "pytest", "test_timeout_sec": True},
+                {"test_cmd": "pytest", "setup_cmd": ""},
+            ):
+                manifest_path.write_text(json.dumps(bad_payload), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    load_manifest(root)
+
+    def test_verify_manifest_test_cmd_passes_custom_env_and_timeout(self) -> None:
+        from core.manifest import verify_manifest_test_cmd  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = (
+                "import os, sys; "
+                "assert os.environ.get('AGY_CUSTOM_TOKEN') == 'ok-42'; "
+                "assert os.environ.get('PYTHONDONTWRITEBYTECODE') == '1'"
+            )
+            manifest = LoopManifest(
+                test_cmd=f'"{sys.executable}" -c "{script}"',
+                test_timeout_sec=300,
+            )
+            caller_env = {**os.environ, "AGY_CUSTOM_TOKEN": "ok-42"}
+            caller_env.pop("PYTHONDONTWRITEBYTECODE", None)
+            verify_manifest_test_cmd(root, manifest, env=caller_env)
+            self.assertNotIn("PYTHONDONTWRITEBYTECODE", caller_env)
+
+            ok_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            with mock.patch("core.manifest.subprocess.run", return_value=ok_proc) as run_mock:
+                verify_manifest_test_cmd(root, manifest, env=caller_env)
+            self.assertEqual(run_mock.call_args.kwargs["timeout"], 300)
+            self.assertEqual(run_mock.call_args.kwargs["env"]["AGY_CUSTOM_TOKEN"], "ok-42")
+            self.assertEqual(run_mock.call_args.kwargs["env"]["PYTHONDONTWRITEBYTECODE"], "1")
 
 
 if __name__ == "__main__":
