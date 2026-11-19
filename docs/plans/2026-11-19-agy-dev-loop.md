@@ -134,7 +134,7 @@ OPTIMIZER_SCHEMA = {
 
 | Orden | Tarea | Módulo Principal | Suite de Test (`python3 -m unittest`) | Estado |
 | --- | --- | --- | --- | --- |
-| 1 | Manifiesto `.agents/loop.json` y modo `init` con `dry-run` | `skills/agy-dev-loop/scripts/core/manifest.py` | `tests/test_manifest.py` | `[ ]` |
+| 1 | Manifiesto `.agents/loop.json` y modo `init` con `dry-run` | `skills/agy-dev-loop/scripts/core/manifest.py` | `tests/test_manifest.py` | `[x]` |
 | 2 | Parser de planes y control por subtarea (`- [ ]` a `- [x]`) | `skills/agy-dev-loop/scripts/core/plan_tasks.py` | `tests/test_plan_tasks.py` | `[ ]` |
 | 3 | Aislamiento `git worktree`, diff guard anti-trampa y verificador `RED` | `skills/agy-dev-loop/scripts/core/git_guard.py` | `tests/test_git_guard.py` | `[ ]` |
 | 4 | Gate determinista, huella de error y escalado / circuit-breaker | `skills/agy-dev-loop/scripts/core/eval_runner.py` | `tests/test_eval_runner.py` | `[ ]` |
@@ -159,7 +159,7 @@ OPTIMIZER_SCHEMA = {
   - `detect_stack_manifest(repo_root: Path) -> LoopManifest` (detecta Python `unittest`/`manage.py` o Node `package.json`/`node --test`; lanza `ValueError` si no hay comando de test verificable)
   - `init_manifest(repo_root: Path, run_dry_check: bool = True) -> Path` (escribe `.agents/loop.json` y si `run_dry_check=True` ejecuta `test_cmd`, lanzando `RuntimeError` si devuelve código distinto de 0)
 
-- [ ] **Step 1: Inicializar repositorio Git en `C:\Users\Perrotruco\Workspace\agy-dev-loop` y escribir stubs con `NotImplementedError` + tests en `tests/test_manifest.py`**
+- [x] **Step 1: Inicializar repositorio Git en `C:\Users\Perrotruco\Workspace\agy-dev-loop` y escribir stubs con `NotImplementedError` + tests en `tests/test_manifest.py`**
 
 ```python
 class TestManifest(unittest.TestCase):
@@ -183,21 +183,21 @@ class TestManifest(unittest.TestCase):
             self.assertIn("unittest", loaded.test_cmd)
 ```
 
-- [ ] **Step 2: Ejecutar test runner para verificar estado `RED`**
+- [x] **Step 2: Ejecutar test runner para verificar estado `RED`**
 
 Run: `python3 -m unittest tests/test_manifest.py -v`
 Expected: FAIL / ERROR con `NotImplementedError: Not implemented`
 
-- [ ] **Step 3: Implementar `LoopManifest`, `load_manifest`, `detect_stack_manifest` e `init_manifest` en `skills/agy-dev-loop/scripts/core/manifest.py`**
+- [x] **Step 3: Implementar `LoopManifest`, `load_manifest`, `detect_stack_manifest` e `init_manifest` en `skills/agy-dev-loop/scripts/core/manifest.py`**
 
 Validar tipos, serializar `.agents/loop.json` con indentación de 2 espacios y ejecutar `subprocess.run(manifest.test_cmd, cwd=repo_root, shell=True, capture_output=True, text=True, timeout=60)` cuando `run_dry_check=True`.
 
-- [ ] **Step 4: Ejecutar test runner para verificar estado `GREEN`**
+- [x] **Step 4: Ejecutar test runner para verificar estado `GREEN`**
 
 Run: `python3 -m unittest tests/test_manifest.py -v`
 Expected: PASS (`OK`)
 
-- [ ] **Step 5: Commit de Task 1**
+- [x] **Step 5: Commit de Task 1**
 
 ```bash
 git add skills/agy-dev-loop/scripts/core/__init__.py skills/agy-dev-loop/scripts/core/manifest.py tests/test_manifest.py
