@@ -156,6 +156,69 @@ class PlanTasksTests(unittest.TestCase):
                 with self.assertRaises(IndexError):
                     mark_subtask_completed(plan_path, bad_index)
 
+    def test_fenced_code_blocks_preserve_body_and_ignore_fake_checkboxes_and_headings(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "fenced_plan.md"
+            original = (
+                "# Plan With Fences\n"
+                "```markdown\n"
+                "- [ ] preamble fake checkbox\n"
+                "```\n"
+                "\n"
+                "## Tasks\n"
+                "- [ ] First real task\n"
+                "  Intro line\n"
+                "```python\n"
+                "# column-0 python comment\n"
+                "---\n"
+                "- [ ] fake checkbox inside backticks\n"
+                "```\n"
+                "  Middle line after backticks\n"
+                "~~~~markdown\n"
+                "```\n"
+                "# column-0 heading inside tildes\n"
+                "---\n"
+                "- [ ] fake checkbox inside tildes\n"
+                "~~~~\n"
+                "  Final line of first task\n"
+                "\n"
+                "- [ ] Second real task\n"
+                "  Detail for second task\n"
+            )
+            plan_path.write_text(original, encoding="utf-8")
+
+            subtasks = parse_plan_subtasks(plan_path)
+            self.assertEqual(len(subtasks), 2)
+            self.assertEqual(subtasks[0].title, "First real task")
+            self.assertEqual(subtasks[1].title, "Second real task")
+            self.assertEqual(subtasks[0].line_number, 7)
+            self.assertEqual(subtasks[1].line_number, 23)
+
+            self.assertIn("# column-0 python comment", subtasks[0].body)
+            self.assertIn("- [ ] fake checkbox inside backticks", subtasks[0].body)
+            self.assertIn("  Middle line after backticks", subtasks[0].body)
+            self.assertIn("# column-0 heading inside tildes", subtasks[0].body)
+            self.assertIn("- [ ] fake checkbox inside tildes", subtasks[0].body)
+            self.assertIn("  Final line of first task", subtasks[0].body)
+            self.assertEqual(subtasks[1].body, "  Detail for second task")
+
+            mark_subtask_completed(plan_path, 0)
+            after_first = plan_path.read_text(encoding="utf-8")
+            self.assertIn("- [x] First real task\n", after_first)
+            self.assertIn("- [ ] preamble fake checkbox\n", after_first)
+            self.assertIn("- [ ] fake checkbox inside backticks\n", after_first)
+            self.assertIn("- [ ] fake checkbox inside tildes\n", after_first)
+            self.assertIn("- [ ] Second real task\n", after_first)
+
+            mark_subtask_completed(plan_path, 1)
+            after_second = plan_path.read_text(encoding="utf-8")
+            self.assertIn("- [x] Second real task\n", after_second)
+            self.assertIn("- [ ] preamble fake checkbox\n", after_second)
+            self.assertIn("- [ ] fake checkbox inside backticks\n", after_second)
+            self.assertIn("- [ ] fake checkbox inside tildes\n", after_second)
+
 
 if __name__ == "__main__":
     unittest.main()

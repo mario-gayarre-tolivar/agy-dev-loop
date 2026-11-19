@@ -263,6 +263,34 @@ class ManifestTests(unittest.TestCase):
                     init_manifest(ok_root, run_dry_check=True)
                 self.assertIn("spawn failed", str(os_err_ctx.exception))
 
+    def test_verify_manifest_test_cmd_avoids_pycache_and_raises_on_failure(self) -> None:
+        from core.manifest import verify_manifest_test_cmd  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "tests").mkdir()
+            (root / "tests" / "test_mod.py").write_text(
+                "import unittest\n"
+                "import mod\n\n"
+                "class ModTest(unittest.TestCase):\n"
+                "    def test_val(self) -> None:\n"
+                "        self.assertEqual(mod.VALUE, 1)\n",
+                encoding="utf-8",
+            )
+            passing = LoopManifest(
+                test_cmd=f'"{sys.executable}" -m unittest discover -s tests -v'
+            )
+            verify_manifest_test_cmd(root, passing)
+            self.assertEqual(list(root.rglob("__pycache__")), [])
+
+            failing = LoopManifest(
+                test_cmd=f'"{sys.executable}" -c "import sys; print(\'bad\'); sys.exit(2)"'
+            )
+            with self.assertRaises(RuntimeError) as ctx:
+                verify_manifest_test_cmd(root, failing)
+            self.assertIn("bad", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.git_guard import (
+    capture_worktree_diff,
     check_protected_tests_diff,
     verify_new_tests_fail_without_prod_changes,
 )
@@ -76,28 +77,13 @@ def _combine_output(stdout: str | bytes | None, stderr: str | bytes | None) -> s
     return "\n".join(part for part in parts if part)
 
 
-def _capture_diff(worktree_path: Path, base_ref: str) -> str:
-    try:
-        proc = subprocess.run(
-            ["git", "-c", "core.quotePath=false", "diff", base_ref],
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-    except OSError:
-        return ""
-    if proc.returncode == 0:
-        return proc.stdout
-    return proc.stdout or proc.stderr or ""
-
-
 def _fail_result(
     worktree_path: Path, base_ref: str, stage: str, stage_output: str
 ) -> GateResult:
-    diff_text = _capture_diff(worktree_path, base_ref)
+    try:
+        diff_text = capture_worktree_diff(worktree_path, base_ref)
+    except (RuntimeError, OSError) as exc:
+        diff_text = f"<diff unavailable: {exc}>"
     fingerprint = compute_error_fingerprint(stage_output, diff_text)
     return GateResult(
         passed=False,

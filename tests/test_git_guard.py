@@ -315,6 +315,121 @@ class GitGuardTests(unittest.TestCase):
             self.assertFalse(untracked.exists())
             self.assertIn("# checkpoint", calc_path.read_text(encoding="utf-8"))
 
+    def test_diff_parser_resists_in_hunk_headers_gitconfig_and_spaced_paths(self) -> None:
+        from core.git_guard import _has_added_test_lines  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_sample_repo(repo)
+            # Simulate hostile ~/.gitconfig setting diff.noprefix=true
+            _run_git(repo, "config", "diff.noprefix", "true")
+
+            # (a) Commit a test with a `-- assert` line and another with assertions
+            tricky_js = repo / "tests" / "tricky.test.js"
+            tricky_js.write_text(
+                "const x = 1;\n"
+                "-- assert(x === 1);\n"
+                "expect(x).toBe(1);\n",
+                encoding="utf-8",
+            )
+            spaced_py = repo / "tests" / "test with space.py"
+            spaced_py.write_text(
+                "import unittest\n"
+                "from calc import add\n\n\n"
+                "class SpacedTests(unittest.TestCase):\n"
+                "    def test_one(self) -> None:\n"
+                "        self.assertEqual(add(1, 2), 3)\n\n"
+                "    def test_two(self) -> None:\n"
+                "        self.assertEqual(add(2, 3), 5)\n",
+                encoding="utf-8",
+            )
+            _run_git(repo, "add", "-A")
+            _run_git(repo, "commit", "-m", "add tricky and spaced tests")
+            base_ref = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+            protected = ("tests/*.py", "**/*.test.js")
+
+            # 1. Attempting to hijack current_file with an added `++ b/prod.py` line in hunk 1
+            #    before deleting an assertion in hunk 2 of tests/test_calc.py must be caught!
+            test_calc = repo / "tests" / "test_calc.py"
+            orig_test_calc = test_calc.read_text(encoding="utf-8")
+            test_calc.write_text(
+                orig_test_calc.replace(
+                    "import unittest\n",
+                    "import unittest\n++ b/prod.py\n",
+                ).replace(
+                    "        self.assertEqual(add(0, 0), 0)",
+                    "        pass",
+                ),
+                encoding="utf-8",
+            )
+            ok, reason = check_protected_tests_diff(repo, base_ref, protected)
+            self.assertFalse(ok)
+            self.assertIn("tests/test_calc.py", reason)
+            test_calc.write_text(orig_test_calc, encoding="utf-8")
+
+            # 2. Removing a line starting with `-- assert` (renders as `--- assert...` in diff)
+            #    must be counted as a removed assertion, not skipped as a file header!
+            orig_tricky = tricky_js.read_text(encoding="utf-8")
+            tricky_js.write_text(
+                "const x = 1;\n"
+                "expect(x).toBe(1);\n",
+                encoding="utf-8",
+            )
+            ok, reason = check_protected_tests_diff(repo, base_ref, protected)
+            self.assertFalse(ok)
+            self.assertIn("tests/tricky.test.js", reason)
+            tricky_js.write_text(orig_tricky, encoding="utf-8")
+
+            # 3. Adding `++ b/tests/fake.py` inside a non-protected file must not fool _has_added_test_lines
+            fake_prod_diff = (
+                "diff --git a/calc.py b/calc.py\n"
+                "--- a/calc.py\n"
+                "+++ b/calc.py\n"
+                "@@ -2,0 +3,2 @@\n"
+                "+++ b/tests/fake.py\n"
+                "+x = 1\n"
+            )
+            self.assertFalse(_has_added_test_lines(fake_prod_diff, protected))
+
+            # 4. Weakening a protected test file whose path contains spaces must be caught
+            #    even when git emits a trailing `\t` on `+++ b/tests/test with space.py\t`
+            spaced_py.write_text(
+                "import unittest\n"
+                "from calc import add\n\n\n"
+                "class SpacedTests(unittest.TestCase):\n"
+                "    def test_one(self) -> None:\n"
+                "        self.assertEqual(add(1, 2), 3)\n",
+                encoding="utf-8",
+            )
+            ok, reason = check_protected_tests_diff(repo, base_ref, protected)
+            self.assertFalse(ok)
+            self.assertIn("tests/test with space.py", reason)
+
+    def test_capture_worktree_diff_includes_tracked_and_untracked_and_raises_on_git_error(
+        self,
+    ) -> None:
+        from core.git_guard import capture_worktree_diff  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            base_ref = _init_sample_repo(repo)
+            _run_git(repo, "config", "diff.noprefix", "true")
+
+            (repo / "calc.py").write_text(
+                "def add(a: int, b: int) -> int:\n    return a + b + 0\n",
+                encoding="utf-8",
+            )
+            (repo / "brand_new.py").write_text("VALUE = 42\n", encoding="utf-8")
+
+            diff_text = capture_worktree_diff(repo, base_ref)
+            self.assertIn("+++ b/calc.py", diff_text)
+            self.assertIn("+++ b/brand_new.py", diff_text)
+            self.assertIn("+VALUE = 42", diff_text)
+
+            with self.assertRaises(RuntimeError):
+                capture_worktree_diff(repo, "nonexistent-ref-deadbeef")
+
 
 if __name__ == "__main__":
     unittest.main()

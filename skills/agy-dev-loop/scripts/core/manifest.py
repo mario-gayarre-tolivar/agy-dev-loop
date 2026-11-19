@@ -156,41 +156,49 @@ def detect_stack_manifest(repo_root: Path) -> LoopManifest:
     raise ValueError(f"Could not detect a verifiable test command in {root}")
 
 
+def verify_manifest_test_cmd(repo_root: Path, manifest: LoopManifest) -> None:
+    """Dry-run `manifest.test_cmd` in `repo_root` without writing Python bytecode."""
+    root = Path(repo_root)
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    try:
+        result = subprocess.run(
+            manifest.test_cmd,
+            cwd=root,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            env=env,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise RuntimeError(
+            f"Dry-run test command failed to execute ({manifest.test_cmd}): {exc}"
+        ) from exc
+
+    if result.returncode != 0:
+        output = "\n".join(
+            part
+            for part in (
+                (result.stdout or "").strip(),
+                (result.stderr or "").strip(),
+            )
+            if part
+        )
+        raise RuntimeError(
+            f"Dry-run test command failed (exit {result.returncode}): {manifest.test_cmd}"
+            + (f"\n{output}" if output else "")
+        )
+
+
 def init_manifest(repo_root: Path, run_dry_check: bool = True) -> Path:
     """Detect stack, verify `test_cmd` if requested, and write `.agents/loop.json`."""
     root = Path(repo_root)
     manifest = detect_stack_manifest(root)
 
     if run_dry_check:
-        try:
-            result = subprocess.run(
-                manifest.test_cmd,
-                cwd=root,
-                shell=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=60,
-            )
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            raise RuntimeError(
-                f"Dry-run test command failed to execute ({manifest.test_cmd}): {exc}"
-            ) from exc
-
-        if result.returncode != 0:
-            output = "\n".join(
-                part
-                for part in (
-                    (result.stdout or "").strip(),
-                    (result.stderr or "").strip(),
-                )
-                if part
-            )
-            raise RuntimeError(
-                f"Dry-run test command failed (exit {result.returncode}): {manifest.test_cmd}"
-                + (f"\n{output}" if output else "")
-            )
+        verify_manifest_test_cmd(root, manifest)
 
     manifest_path = root / ".agents" / "loop.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

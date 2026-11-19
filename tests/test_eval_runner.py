@@ -329,6 +329,51 @@ class EvalRunnerTests(unittest.TestCase):
             self.assertIn("spawn failed", res_oserr.output)
             self.assertRegex(res_oserr.error_fingerprint, _HEX16_RE)
 
+    def test_error_fingerprint_differs_for_different_untracked_file_edits_with_same_output(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            base_ref = _init_sample_repo(repo)
+            manifest = LoopManifest(
+                test_cmd=f'"{sys.executable}" -m unittest discover -s tests -v',
+            )
+
+            # Brand-new untracked test + untracked prod module
+            (repo / "tests" / "test_greenfield.py").write_text(
+                "import unittest\n"
+                "from greenfield import compute\n\n\n"
+                "class GreenfieldTests(unittest.TestCase):\n"
+                "    def test_compute(self) -> None:\n"
+                "        self.assertEqual(compute(), 42)\n",
+                encoding="utf-8",
+            )
+            (repo / "greenfield.py").write_text(
+                "def compute() -> int:\n"
+                "    return 1 + 0\n",
+                encoding="utf-8",
+            )
+            res1 = run_deterministic_gate(repo, manifest, base_ref, verify_red=True)
+            self.assertFalse(res1.passed)
+            self.assertEqual(res1.failed_stage, "test")
+
+            # Different untracked edit that yields the exact same failing output (1 != 42)
+            (repo / "greenfield.py").write_text(
+                "def compute() -> int:\n"
+                "    return 2 - 1\n",
+                encoding="utf-8",
+            )
+            res2 = run_deterministic_gate(repo, manifest, base_ref, verify_red=True)
+            self.assertFalse(res2.passed)
+            self.assertEqual(res2.failed_stage, "test")
+
+            # Confirm normalized test output alone is identical, while full fingerprint differs
+            self.assertEqual(
+                compute_error_fingerprint(res1.output, ""),
+                compute_error_fingerprint(res2.output, ""),
+            )
+            self.assertNotEqual(res1.error_fingerprint, res2.error_fingerprint)
+
 
 if __name__ == "__main__":
     unittest.main()

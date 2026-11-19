@@ -766,6 +766,196 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertEqual(emitted["status"], "skipped_insufficient_runs")
             self.assertFalse(emitted["applied"])
 
+    def test_inner_loop_fails_before_worktree_or_agent_when_manifest_test_cmd_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            plan_path = _init_loop_repo(repo)
+
+            # Configure a broken/failing test_cmd and commit so the repo is clean
+            manifest_path = repo / ".agents" / "loop.json"
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_data["test_cmd"] = (
+                f'"{sys.executable}" -c "import sys; print(\'broken baseline\'); sys.exit(2)"'
+            )
+            manifest_path.write_text(
+                json.dumps(manifest_data, indent=2) + "\n", encoding="utf-8"
+            )
+            _run_git(repo, "add", ".agents/loop.json")
+            _run_git(repo, "commit", "-m", "break baseline test_cmd")
+
+            run_id = "run-broken-cmd"
+            expected_wt = repo / ".agents" / "worktrees" / run_id
+            agent_called = False
+
+            async def fail_if_called(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                nonlocal agent_called
+                agent_called = True
+                raise AssertionError("agent_fn must not be invoked when baseline test_cmd fails")
+
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    asyncio.run(
+                        run_inner_loop(
+                            {
+                                "repo_root": str(repo),
+                                "plan_path": str(plan_path),
+                                "run_id": run_id,
+                            },
+                            fail_if_called,
+                            lambda _name: None,
+                            lambda *_args: None,
+                        )
+                    )
+                self.assertIn("broken baseline", str(ctx.exception))
+                self.assertFalse(agent_called)
+                self.assertFalse(expected_wt.exists())
+                branches = _run_git(
+                    repo, "branch", "--list", f"agy-loop/{run_id}"
+                ).stdout.strip()
+                self.assertEqual(branches, "")
+            finally:
+                _remove_worktree_safe(repo, expected_wt)
+
+    def test_llm_json_trust_boundaries_reject_non_string_fields_and_malformed_blocking_issues(
+        self,
+    ) -> None:
+        from core.workflow_logic import _extract_lesson, _parse_proposal  # noqa: PLC0415
+
+        # 1. _extract_lesson must return None on None / non-string / empty fields
+        for bad_candidate in (
+            {"symptom": None, "rule": "valid rule"},
+            {"symptom": "valid symptom", "rule": None},
+            {"symptom": 123, "rule": "valid rule"},
+            {"symptom": "valid symptom", "rule": ["not", "str"]},
+            {"symptom": "   ", "rule": "valid rule"},
+            {"symptom": "valid symptom", "rule": ""},
+        ):
+            self.assertIsNone(
+                _extract_lesson({"lesson_candidate": bad_candidate}, "2026-11-19")
+            )
+
+        # 2. _parse_proposal must reject non-string rule_id, text, or rationale
+        for bad_proposal in (
+            {
+                "target_prompt": "executor.md",
+                "candidate_rules": [{"rule_id": None, "text": "valid"}],
+                "rationale": "ok",
+            },
+            {
+                "target_prompt": "executor.md",
+                "candidate_rules": [{"rule_id": "R1", "text": None}],
+                "rationale": "ok",
+            },
+            {
+                "target_prompt": "executor.md",
+                "candidate_rules": [{"rule_id": 1, "text": "valid"}],
+                "rationale": "ok",
+            },
+            {
+                "target_prompt": "executor.md",
+                "candidate_rules": [{"rule_id": "R1", "text": "valid"}],
+                "rationale": None,
+            },
+            {
+                "target_prompt": "executor.md",
+                "candidate_rules": [{"rule_id": "R1", "text": "valid"}],
+                "rationale": 42,
+            },
+        ):
+            with self.assertRaises(ValueError):
+                _parse_proposal(bad_proposal)
+
+        # 3. run_inner_loop handles string and integer blocking_issues and None lesson_candidate
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            plan_path = _init_loop_repo(repo, max_iter=5, circuit_breaker=4)
+            run_id = "run-llm-boundary"
+            expected_wt = repo / ".agents" / "worktrees" / run_id
+            exec_prompts: list[str] = []
+            rev_calls = 0
+
+            async def fake_agent(
+                prompt: str,
+                schema: dict[str, Any],
+                role: str = "",
+                workspace: str = "inherit",
+                model: str = "inherit",
+            ) -> dict[str, Any]:
+                nonlocal rev_calls
+                if schema is EXECUTOR_SCHEMA:
+                    exec_prompts.append(prompt)
+                    attempt = len(exec_prompts)
+                    (expected_wt / "calc.py").write_text(
+                        "def add(a: int, b: int) -> int:\n"
+                        "    return a + b\n\n\n"
+                        f"def sub(a: int, b: int) -> int:  # attempt {attempt}\n"
+                        "    return a - b\n",
+                        encoding="utf-8",
+                    )
+                    (expected_wt / "tests" / "test_calc.py").write_text(
+                        "import unittest\n"
+                        "from calc import add, sub\n\n\n"
+                        "class CalcTests(unittest.TestCase):\n"
+                        "    def test_add(self) -> None:\n"
+                        "        self.assertEqual(add(1, 2), 3)\n\n"
+                        "    def test_sub(self) -> None:\n"
+                        "        self.assertEqual(sub(5, 2), 3)\n",
+                        encoding="utf-8",
+                    )
+                    return {
+                        "subtask_index": 0,
+                        "files_changed": ["calc.py", "tests/test_calc.py"],
+                        "test_files_touched": ["tests/test_calc.py"],
+                        "summary": f"attempt {attempt}",
+                    }
+
+                rev_calls += 1
+                if rev_calls == 1:
+                    # String blocking_issues (must NOT be split char-by-char) + None lesson field
+                    return {
+                        "approved": False,
+                        "blocking_issues": "Handle negative numbers",
+                        "lesson_candidate": {"symptom": None, "rule": "do not save"},
+                    }
+                if rev_calls == 2:
+                    # Integer blocking_issues (must NOT raise TypeError)
+                    return {
+                        "approved": False,
+                        "blocking_issues": 42,
+                        "lesson_candidate": {"symptom": "s", "rule": None},
+                    }
+                return {
+                    "approved": True,
+                    "blocking_issues": [],
+                    "lesson_candidate": None,
+                }
+
+            try:
+                result = asyncio.run(
+                    run_inner_loop(
+                        {
+                            "repo_root": str(repo),
+                            "plan_path": str(plan_path),
+                            "run_id": run_id,
+                        },
+                        fake_agent,
+                        lambda _name: None,
+                        lambda *_args: None,
+                    )
+                )
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["reviewer_rejections"], 2)
+                self.assertEqual(result["lessons_added"], 0)
+                self.assertIn("- Handle negative numbers", exec_prompts[1])
+                self.assertNotIn("- H\n- a\n- n", exec_prompts[1])
+                self.assertIn("Reviewer rejected without blocking_issues.", exec_prompts[2])
+            finally:
+                _remove_worktree_safe(repo, expected_wt)
+
 
 if __name__ == "__main__":
     unittest.main()

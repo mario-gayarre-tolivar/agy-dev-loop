@@ -8,6 +8,7 @@ from pathlib import Path
 
 _CHECKBOX_RE = re.compile(r"^\s*-\s*\[([ xX])\]\s+(.+)$")
 _STOP_BODY_RE = re.compile(r"^(?:#{1,6}\s|---\s*$)")
+_FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ def _parse_lines(raw_lines: list[str]) -> list[PlanSubtask]:
     current_meta: tuple[int, str, bool, int] | None = None
     body_lines: list[str] = []
     collecting_body = False
+    active_fence: tuple[str, int] | None = None
 
     def flush() -> None:
         nonlocal current_meta, body_lines
@@ -58,6 +60,25 @@ def _parse_lines(raw_lines: list[str]) -> list[PlanSubtask]:
 
     for line_number, raw_line in enumerate(raw_lines, start=1):
         line = raw_line.rstrip("\r\n")
+        if active_fence is not None:
+            if collecting_body:
+                body_lines.append(line)
+            fence_char, fence_len = active_fence
+            stripped = line.strip()
+            if len(stripped) >= fence_len and set(stripped) == {fence_char}:
+                active_fence = None
+            continue
+
+        fence_match = _FENCE_OPEN_RE.match(line)
+        if fence_match:
+            marker, info = fence_match.group(1), fence_match.group(2)
+            fence_char = marker[0]
+            if not (fence_char == "`" and "`" in info):
+                active_fence = (fence_char, len(marker))
+                if collecting_body:
+                    body_lines.append(line)
+                continue
+
         match = _CHECKBOX_RE.match(line)
         if match:
             flush()

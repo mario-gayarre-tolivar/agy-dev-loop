@@ -16,12 +16,13 @@ from core.eval_runner import (
     run_deterministic_gate,
 )
 from core.git_guard import (
+    capture_worktree_diff,
     checkpoint_commit,
     create_isolated_worktree,
     ensure_clean_repo,
     rollback_to_ref,
 )
-from core.manifest import load_manifest
+from core.manifest import load_manifest, verify_manifest_test_cmd
 from core.memory import (
     Lesson,
     RunMetrics,
@@ -115,50 +116,6 @@ def _has_worktree_changes(worktree_path: Path) -> bool:
     return proc.returncode == 0 and bool(proc.stdout.strip())
 
 
-def _capture_worktree_diff(worktree_path: Path, base_ref: str) -> str:
-    diff_proc = _run_git(
-        worktree_path,
-        "-c",
-        "core.quotePath=false",
-        "-c",
-        "diff.noprefix=false",
-        "diff",
-        "--no-ext-diff",
-        base_ref,
-    )
-    parts: list[str] = []
-    if diff_proc.stdout.strip():
-        parts.append(diff_proc.stdout.rstrip())
-
-    untracked_proc = _run_git(
-        worktree_path,
-        "-c",
-        "core.quotePath=false",
-        "ls-files",
-        "--others",
-        "--exclude-standard",
-    )
-    if untracked_proc.returncode == 0:
-        for rel in sorted(p.strip() for p in untracked_proc.stdout.splitlines() if p.strip()):
-            rel_posix = rel.replace("\\", "/")
-            abs_path = worktree_path / rel_posix
-            if not abs_path.is_file():
-                continue
-            try:
-                content = abs_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            added_lines = "\n".join(f"+{line}" for line in content.splitlines())
-            parts.append(
-                f"diff --git a/{rel_posix} b/{rel_posix}\n"
-                f"new file mode 100644\n"
-                f"--- /dev/null\n"
-                f"+++ b/{rel_posix}\n"
-                f"{added_lines}"
-            )
-    return "\n\n".join(parts)
-
-
 def _read_text_if_exists(path: Path) -> str:
     if path.is_file():
         return path.read_text(encoding="utf-8")
@@ -250,8 +207,12 @@ def _extract_lesson(review: Any, run_date: str) -> Lesson | None:
     candidate = review.get("lesson_candidate")
     if not isinstance(candidate, dict):
         return None
-    symptom = str(candidate.get("symptom", "")).strip()
-    rule = str(candidate.get("rule", "")).strip()
+    raw_symptom = candidate.get("symptom")
+    raw_rule = candidate.get("rule")
+    if not isinstance(raw_symptom, str) or not isinstance(raw_rule, str):
+        return None
+    symptom = raw_symptom.strip()
+    rule = raw_rule.strip()
     if not symptom or not rule:
         return None
     lesson_id = f"L-{compute_error_fingerprint(symptom, rule)[:8]}"
@@ -262,6 +223,18 @@ def _extract_lesson(review: Any, run_date: str) -> Lesson | None:
         hits=1,
         last_run=run_date,
     )
+
+
+def _normalize_blocking_issues(raw_issues: Any) -> list[str]:
+    if isinstance(raw_issues, list):
+        return [
+            item.strip()
+            for item in raw_issues
+            if isinstance(item, str) and item.strip()
+        ]
+    if isinstance(raw_issues, str) and raw_issues.strip():
+        return [raw_issues.strip()]
+    return []
 
 
 async def run_inner_loop(
@@ -311,6 +284,7 @@ async def run_inner_loop(
     phase_fn("Setup")
     manifest = load_manifest(repo_root)
     ensure_clean_repo(repo_root)
+    verify_manifest_test_cmd(repo_root, manifest)
 
     executor_template = (prompts_dir / "executor.md").read_text(encoding="utf-8")
     reviewer_template = (prompts_dir / "reviewer.md").read_text(encoding="utf-8")
@@ -407,7 +381,7 @@ async def run_inner_loop(
                     current_tier = "pro"
                 continue
 
-            git_diff = _capture_worktree_diff(worktree_path, base_ref)
+            git_diff = capture_worktree_diff(worktree_path, base_ref)
             rev_prompt = build_reviewer_prompt(
                 template_text=reviewer_template,
                 subtask_title=subtask.title,
@@ -442,7 +416,7 @@ async def run_inner_loop(
             reviewer_rejections += 1
             consecutive_failures += 1
             raw_issues = review.get("blocking_issues") if isinstance(review, dict) else None
-            issues = [str(item) for item in (raw_issues or [])]
+            issues = _normalize_blocking_issues(raw_issues)
             issues_text = (
                 "\n".join(f"- {item}" for item in issues)
                 or "Reviewer rejected without blocking_issues."
@@ -548,11 +522,18 @@ def _parse_proposal(proposal: Any) -> tuple[str, list[PromptRule], str]:
 
     rules: list[PromptRule] = []
     for item in raw_rules:
-        if not isinstance(item, dict) or "rule_id" not in item or "text" not in item:
+        if not isinstance(item, dict):
             raise ValueError("Each candidate rule must contain 'rule_id' and 'text'")
-        rules.append(PromptRule(rule_id=str(item["rule_id"]), text=str(item["text"])))
+        rule_id = item.get("rule_id")
+        text = item.get("text")
+        if not isinstance(rule_id, str) or not isinstance(text, str):
+            raise ValueError("Each candidate rule must have string 'rule_id' and 'text'")
+        rules.append(PromptRule(rule_id=rule_id, text=text))
 
-    rationale = str(proposal.get("rationale", "")).strip()
+    raw_rationale = proposal.get("rationale")
+    if not isinstance(raw_rationale, str):
+        raise ValueError("Optimizer rationale must be a string")
+    rationale = raw_rationale.strip()
     return target_prompt, rules, rationale
 
 
