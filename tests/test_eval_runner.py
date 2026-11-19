@@ -438,6 +438,61 @@ class EvalRunnerTests(unittest.TestCase):
             self.assertFalse(res_guard.should_run_reviewer)
             self.assertIn("tests/custom_check.py", res_guard.output)
 
+    def test_gate_forwards_timeout_and_env_to_verify_red_and_cmd_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            base_ref = _init_sample_repo(repo)
+
+            (repo / "calc.py").write_text(
+                "def add(a: int, b: int) -> int:\n"
+                "    return a + b\n\n"
+                "def sub(a: int, b: int) -> int:\n"
+                "    return a - b\n",
+                encoding="utf-8",
+            )
+            (repo / "tests" / "test_calc.py").write_text(
+                "import unittest\n"
+                "from calc import add, sub\n\n\n"
+                "class CalcTests(unittest.TestCase):\n"
+                "    def test_add_positive(self) -> None:\n"
+                "        self.assertEqual(add(1, 2), 3)\n\n"
+                "    def test_sub(self) -> None:\n"
+                "        self.assertEqual(sub(5, 2), 3)\n",
+                encoding="utf-8",
+            )
+
+            custom_env = dict(os.environ)
+            custom_env["AGY_CUSTOM_VAR"] = "hydrated-ok"
+            manifest = LoopManifest(
+                test_cmd=f'"{sys.executable}" -m unittest discover -s tests -v',
+                lint_cmd=(
+                    f'"{sys.executable}" -c '
+                    '"import os, sys; sys.exit(0 if os.environ.get(\'AGY_CUSTOM_VAR\') == \'hydrated-ok\' else 1)"'
+                ),
+                verify_red=True,
+                test_timeout_sec=30,
+            )
+
+            shell_calls: list[tuple[object, object]] = []
+            real_run = subprocess.run
+
+            def _spy_run(
+                *args: object, **kwargs: object
+            ) -> subprocess.CompletedProcess[str]:
+                if kwargs.get("shell"):
+                    shell_calls.append((kwargs.get("timeout"), kwargs.get("env")))
+                return real_run(*args, **kwargs)  # type: ignore[arg-type]
+
+            with mock.patch("subprocess.run", side_effect=_spy_run):
+                res = run_deterministic_gate(
+                    repo, manifest, base_ref, verify_red=True, env=custom_env
+                )
+
+            self.assertTrue(res.passed, msg=res.output)
+            self.assertIn("[verify_red]", res.output)
+            self.assertEqual(len(shell_calls), 3)
+            self.assertEqual(shell_calls, [(30, custom_env), (30, custom_env), (30, custom_env)])
+
 
 if __name__ == "__main__":
     unittest.main()

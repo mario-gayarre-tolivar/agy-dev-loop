@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "skills" / "agy-dev-loop" / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
@@ -500,6 +502,69 @@ class GitGuardTests(unittest.TestCase):
             self.assertNotEqual(branch_ref.returncode, 0)
             # Already-deleted worktree and branch should be tolerated cleanly.
             remove_isolated_worktree(repo, wt, "cleanup-1")
+
+    def test_remove_isolated_worktree_prunes_manually_deleted_dir_and_raises_on_stuck_cleanup(
+        self,
+    ) -> None:
+        from core import git_guard  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_sample_repo(repo)
+
+            # 1. Manual directory deletion: git worktree prune unblocks branch -D.
+            wt_manual = create_isolated_worktree(repo, "manual-del")
+            shutil.rmtree(wt_manual)
+            self.assertFalse(wt_manual.exists())
+            remove_isolated_worktree(repo, wt_manual, "manual-del")
+            branch_ref = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", "refs/heads/agy-loop/manual-del"],
+                cwd=repo,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(branch_ref.returncode, 0)
+
+            # 2. Failed worktree remove while directory still exists raises RuntimeError.
+            wt_stuck = create_isolated_worktree(repo, "stuck-wt")
+            real_run_git = git_guard._run_git
+            try:
+                def _fail_worktree_remove(
+                    cwd: Path, *args: str
+                ) -> subprocess.CompletedProcess[str]:
+                    if args[:2] == ("worktree", "remove"):
+                        return subprocess.CompletedProcess(
+                            ["git", *args], 1, "", "worktree locked"
+                        )
+                    return real_run_git(cwd, *args)
+
+                with mock.patch.object(
+                    git_guard, "_run_git", side_effect=_fail_worktree_remove
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "worktree locked"):
+                        remove_isolated_worktree(repo, wt_stuck, "stuck-wt")
+            finally:
+                remove_isolated_worktree(repo, wt_stuck, "stuck-wt")
+
+            # 3. Failed branch -D while branch still exists raises RuntimeError.
+            wt_branch = create_isolated_worktree(repo, "stuck-branch")
+            try:
+                def _fail_branch_delete(
+                    cwd: Path, *args: str
+                ) -> subprocess.CompletedProcess[str]:
+                    if args[:2] == ("branch", "-D"):
+                        return subprocess.CompletedProcess(
+                            ["git", *args], 1, "", "branch locked"
+                        )
+                    return real_run_git(cwd, *args)
+
+                with mock.patch.object(
+                    git_guard, "_run_git", side_effect=_fail_branch_delete
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "branch locked"):
+                        remove_isolated_worktree(repo, wt_branch, "stuck-branch")
+            finally:
+                remove_isolated_worktree(repo, wt_branch, "stuck-branch")
 
     def test_multilang_assertions_mnemonic_prefix_and_comment_styles(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
