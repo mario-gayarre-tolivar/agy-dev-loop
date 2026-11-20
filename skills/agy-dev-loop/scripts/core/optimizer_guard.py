@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import difflib
+import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -77,6 +79,7 @@ def _run_suite(cmd: list[str], cwd: Path) -> bool:
             encoding="utf-8",
             errors="replace",
             timeout=60,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -88,7 +91,7 @@ def run_offline_benchmarks(benchmarks_root: Path) -> tuple[bool, dict[str, bool]
     root = Path(benchmarks_root)
     results = {
         "py_fixture": _run_suite(
-            ["python3", "-m", "unittest", "discover", "-s", "tests", "-v"],
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
             root / "py_fixture",
         ),
         "js_fixture": _run_suite(["node", "--test"], root / "js_fixture"),
