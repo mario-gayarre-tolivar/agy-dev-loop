@@ -662,10 +662,17 @@ class GitGuardTests(unittest.TestCase):
             self.assertFalse(ok_custom)
             self.assertIn("tests/custom.test.sql", reason_custom)
 
-            with self.assertRaises(ValueError):
-                check_protected_tests_diff(
-                    repo, base_ref, protected, assert_regex="[invalid"
-                )
+            for bad_regex in ("[invalid", "", "   "):
+                with self.assertRaises(ValueError):
+                    check_protected_tests_diff(
+                        repo, base_ref, protected, assert_regex=bad_regex
+                    )
+
+            # Assert_regex preserves intentional spaces (doesn't strip)
+            ok_spaced, _ = check_protected_tests_diff(
+                repo, base_ref, protected, assert_regex=" check_eq\\( "
+            )
+            self.assertTrue(ok_spaced)
 
 
 if __name__ == "__main__":

@@ -415,9 +415,13 @@ class GeneralizationEvalTests(unittest.TestCase):
             _run_git(repo, "commit", "-m", "initial")
 
             buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            with (
+                mock.patch("cli.detect_stack_manifest", wraps=detect_stack_manifest) as detect_spy,
+                contextlib.redirect_stdout(buf),
+            ):
                 rc_init = cli.main(["init", "--repo", str(repo)])
             self.assertEqual(rc_init, 0, buf.getvalue())
+            self.assertEqual(detect_spy.call_count, 1)
             init_payload = json.loads(buf.getvalue())
             self.assertEqual(init_payload["status"], "ok")
             self.assertEqual(init_payload["gitignore_hint"], [".agents/worktrees/", ".agents/loop/"])
@@ -445,6 +449,86 @@ class GeneralizationEvalTests(unittest.TestCase):
 
             self.assertEqual(_run_git(repo, "status", "--porcelain").stdout.strip(), "")
             wt_root = repo / ".agents" / "worktrees"
+            if wt_root.exists():
+                self.assertEqual(list(wt_root.iterdir()), [])
+
+            # CLI failure exit code 1: init on undetectable repo
+            empty_repo = Path(tmp) / "empty_repo"
+            empty_repo.mkdir()
+            err_buf = io.StringIO()
+            with contextlib.redirect_stderr(err_buf):
+                rc_init_fail = cli.main(["init", "--repo", str(empty_repo)])
+            self.assertEqual(rc_init_fail, 1)
+            self.assertEqual(json.loads(err_buf.getvalue())["status"], "error")
+
+            # CLI failure exit code 1: doctor on repo missing manifest
+            no_manifest_repo = Path(tmp) / "no_manifest_repo"
+            no_manifest_repo.mkdir()
+            _init_git_repo(no_manifest_repo)
+            (no_manifest_repo / "README.md").write_text("hi\n", encoding="utf-8")
+            _run_git(no_manifest_repo, "add", "README.md")
+            _run_git(no_manifest_repo, "commit", "-m", "init")
+            missing_buf = io.StringIO()
+            with contextlib.redirect_stdout(missing_buf):
+                rc_doc_missing = cli.main(["doctor", "--repo", str(no_manifest_repo)])
+            self.assertEqual(rc_doc_missing, 1)
+            missing_payload = json.loads(missing_buf.getvalue())
+            self.assertEqual(missing_payload["status"], "failed")
+            self.assertFalse(missing_payload["checks"]["manifest_valid"]["ok"])
+            self.assertFalse(missing_payload["checks"]["dry_run_ok"]["ok"])
+
+            # CLI failure exit code 1: doctor on dirty repo
+            (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+            dirty_buf = io.StringIO()
+            with contextlib.redirect_stdout(dirty_buf):
+                rc_doc_dirty = cli.main(["doctor", "--repo", str(repo)])
+            (repo / "dirty.txt").unlink()
+            self.assertEqual(rc_doc_dirty, 1)
+            dirty_payload = json.loads(dirty_buf.getvalue())
+            self.assertEqual(dirty_payload["status"], "failed")
+            self.assertFalse(dirty_payload["checks"]["clean_repo"]["ok"])
+            self.assertFalse(dirty_payload["checks"]["dry_run_ok"]["ok"])
+
+            # CLI failure exit code 1: doctor records worktree_cleanup_error instead of crashing
+            cleanup_buf = io.StringIO()
+            doctor_run_id = f"doctor-{os.getpid()}"
+            try:
+                with (
+                    mock.patch(
+                        "cli.remove_isolated_worktree",
+                        side_effect=RuntimeError("cleanup locked"),
+                    ),
+                    contextlib.redirect_stdout(cleanup_buf),
+                ):
+                    rc_doc_cleanup = cli.main(["doctor", "--repo", str(repo)])
+                self.assertEqual(rc_doc_cleanup, 1)
+                cleanup_payload = json.loads(cleanup_buf.getvalue())
+                self.assertEqual(cleanup_payload["status"], "failed")
+                self.assertEqual(
+                    cleanup_payload["checks"]["worktree_cleanup_error"],
+                    {"ok": False, "detail": "cleanup locked"},
+                )
+            finally:
+                cli.remove_isolated_worktree(repo, wt_root / doctor_run_id, doctor_run_id)
+
+            # CLI failure exit code 1: doctor enforces gitignored setup_cmd via run_setup_cmd
+            manifest_path = repo / ".agents" / "loop.json"
+            manifest_obj = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_obj["setup_cmd"] = (
+                f'"{sys.executable}" -c "from pathlib import Path; '
+                "Path('unignored_doc.txt').write_text('x', encoding='utf-8')\""
+            )
+            manifest_path.write_text(json.dumps(manifest_obj, indent=2) + "\n", encoding="utf-8")
+            _run_git(repo, "add", ".agents/loop.json")
+            _run_git(repo, "commit", "-m", "add unignored setup_cmd")
+            setup_fail_buf = io.StringIO()
+            with contextlib.redirect_stdout(setup_fail_buf):
+                rc_doc_setup = cli.main(["doctor", "--repo", str(repo)])
+            self.assertEqual(rc_doc_setup, 1)
+            setup_fail_payload = json.loads(setup_fail_buf.getvalue())
+            self.assertEqual(setup_fail_payload["status"], "failed")
+            self.assertFalse(setup_fail_payload["checks"]["dry_run_ok"]["ok"])
+            self.assertIn(".gitignore", setup_fail_payload["checks"]["dry_run_ok"]["detail"])
             if wt_root.exists():
                 self.assertEqual(list(wt_root.iterdir()), [])
 

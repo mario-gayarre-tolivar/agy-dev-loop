@@ -33,6 +33,7 @@ _NPM_DEFAULT_TEST_STUB = 'echo "Error: no test specified" && exit 1'
 _IGNORED_SCAN_DIRS = frozenset(
     {
         ".git",
+        ".agents",
         ".venv",
         "venv",
         "node_modules",
@@ -83,6 +84,22 @@ def resolve_python_cmd() -> str:
     return f'"{exe}"' if " " in exe else exe
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _resolve_repo_python_cmd(repo_root: Path) -> str:
+    """Prefer `"python"` when a Windows venv has `python.exe` without `python3.exe`."""
+    if _is_windows():
+        for venv_name in (".venv", "venv"):
+            scripts_dir = repo_root / venv_name / "Scripts"
+            if (scripts_dir / "python.exe").is_file():
+                if not (scripts_dir / "python3.exe").is_file():
+                    return "python"
+                break
+    return resolve_python_cmd()
+
+
 def _require_non_empty_str(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Manifest field '{field_name}' must be a non-empty string.")
@@ -109,16 +126,18 @@ def _require_bool(value: object, field_name: str) -> bool:
 
 
 def _optional_regex(raw: dict[str, object], field_name: str) -> str | None:
-    pattern = _optional_cmd(raw, field_name)
-    if pattern is None:
+    value = raw.get(field_name)
+    if value is None:
         return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Manifest field '{field_name}' must be a non-empty string.")
     try:
-        re.compile(pattern)
+        re.compile(value)
     except re.error as exc:
         raise ValueError(
             f"Manifest field '{field_name}' is not a valid regex: {exc}"
         ) from exc
-    return pattern
+    return value
 
 
 def _has_matching_file(root: Path, patterns: tuple[str, ...]) -> bool:
@@ -210,9 +229,9 @@ def _detect_node_pm(root: Path) -> str:
 def _detect_wrapper_cmd(
     root: Path, win_wrapper: str, posix_wrapper: str, fallback: str
 ) -> str:
-    if os.name == "nt" and (root / win_wrapper).is_file():
+    if _is_windows() and (root / win_wrapper).is_file():
         return f"{win_wrapper} test"
-    if os.name != "nt" and (root / posix_wrapper).is_file():
+    if not _is_windows() and (root / posix_wrapper).is_file():
         return f"./{posix_wrapper} test"
     return f"{fallback} test"
 
@@ -222,19 +241,19 @@ def detect_stack_manifest(repo_root: Path) -> LoopManifest:
     root = Path(repo_root)
 
     if (root / "manage.py").is_file():
-        return LoopManifest(test_cmd=f"{resolve_python_cmd()} manage.py test")
+        return LoopManifest(test_cmd=f"{_resolve_repo_python_cmd(root)} manage.py test")
 
     if _has_pytest_config(root):
-        return LoopManifest(test_cmd=f"{resolve_python_cmd()} -m pytest")
+        return LoopManifest(test_cmd=f"{_resolve_repo_python_cmd(root)} -m pytest")
 
     tests_dir = root / "tests"
     if tests_dir.is_dir() and _has_matching_file(tests_dir, ("test_*.py",)):
         return LoopManifest(
-            test_cmd=f"{resolve_python_cmd()} -m unittest discover -s tests -v"
+            test_cmd=f"{_resolve_repo_python_cmd(root)} -m unittest discover -s tests -v"
         )
 
     if _has_matching_file(root, ("test_*.py",)):
-        return LoopManifest(test_cmd=f"{resolve_python_cmd()} -m unittest discover -v")
+        return LoopManifest(test_cmd=f"{_resolve_repo_python_cmd(root)} -m unittest discover -v")
 
     package_json = root / "package.json"
     if package_json.is_file():
@@ -255,7 +274,7 @@ def detect_stack_manifest(repo_root: Path) -> LoopManifest:
                 lint_script = scripts.get("lint")
                 build_script = scripts.get("build")
                 return LoopManifest(
-                    test_cmd=f"{pm} test",
+                    test_cmd="bun run test" if pm == "bun" else f"{pm} test",
                     lint_cmd=(
                         f"{pm} run lint"
                         if isinstance(lint_script, str) and lint_script.strip()
@@ -287,7 +306,7 @@ def detect_stack_manifest(repo_root: Path) -> LoopManifest:
             test_cmd=_detect_wrapper_cmd(root, "gradlew.bat", "gradlew", "gradle")
         )
 
-    if any(
+    if root.is_dir() and any(
         entry.is_file() and entry.suffix in {".sln", ".csproj"}
         for entry in root.iterdir()
     ):
@@ -296,31 +315,31 @@ def detect_stack_manifest(repo_root: Path) -> LoopManifest:
     raise ValueError(f"Could not detect a verifiable test command in {root}")
 
 
-def verify_manifest_test_cmd(
+def _run_shell_cmd(
     exec_cwd: Path,
-    manifest: LoopManifest,
-    env: dict[str, str] | None = None,
+    cmd: str,
+    timeout_sec: int,
+    env: dict[str, str] | None,
+    label: str,
 ) -> None:
-    """Dry-run `manifest.test_cmd` in `exec_cwd` without writing Python bytecode."""
+    """Execute `cmd` in `exec_cwd` with `PYTHONDONTWRITEBYTECODE=1` and raise `RuntimeError` on failure."""
     root = Path(exec_cwd)
     run_env = dict(os.environ) if env is None else dict(env)
     run_env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         result = subprocess.run(
-            manifest.test_cmd,
+            cmd,
             cwd=root,
             shell=True,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=manifest.test_timeout_sec,
+            timeout=timeout_sec,
             env=run_env,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
-        raise RuntimeError(
-            f"Dry-run test command failed to execute ({manifest.test_cmd}): {exc}"
-        ) from exc
+        raise RuntimeError(f"{label} failed to execute ({cmd}): {exc}") from exc
 
     if result.returncode != 0:
         output = "\n".join(
@@ -332,22 +351,80 @@ def verify_manifest_test_cmd(
             if part
         )
         raise RuntimeError(
-            f"Dry-run test command failed (exit {result.returncode}): {manifest.test_cmd}"
+            f"{label} failed (exit {result.returncode}): {cmd}"
             + (f"\n{output}" if output else "")
         )
 
 
-def init_manifest(repo_root: Path, run_dry_check: bool = True) -> Path:
+def run_setup_cmd(
+    worktree_path: Path,
+    manifest: LoopManifest,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Run optional `manifest.setup_cmd` in `worktree_path` and verify outputs are gitignored."""
+    if not manifest.setup_cmd:
+        return
+    wt = Path(worktree_path)
+    _run_shell_cmd(
+        wt,
+        manifest.setup_cmd,
+        manifest.test_timeout_sec,
+        env,
+        "Worktree setup_cmd",
+    )
+    status_proc = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=wt,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if status_proc.returncode != 0:
+        detail = (status_proc.stderr or status_proc.stdout or "").strip()
+        raise RuntimeError(f"git status --porcelain failed in {wt}: {detail}")
+    dirty = [line.strip() for line in status_proc.stdout.splitlines() if line.strip()]
+    if dirty:
+        dirty_paths = ", ".join(dirty)
+        raise RuntimeError(
+            f"setup_cmd produced unignored worktree paths ({dirty_paths}). "
+            "Add setup_cmd outputs to .gitignore so rollback does not delete them, "
+            "verify_red does not strip them, and agy-loop/<run_id> never commits them."
+        )
+
+
+def verify_manifest_test_cmd(
+    exec_cwd: Path,
+    manifest: LoopManifest,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Dry-run `manifest.test_cmd` in `exec_cwd` without writing Python bytecode."""
+    _run_shell_cmd(
+        Path(exec_cwd),
+        manifest.test_cmd,
+        manifest.test_timeout_sec,
+        env,
+        "Dry-run test command",
+    )
+
+
+def init_manifest(
+    repo_root: Path,
+    run_dry_check: bool = True,
+    manifest: LoopManifest | None = None,
+    env: dict[str, str] | None = None,
+) -> Path:
     """Detect stack, verify `test_cmd` if requested, and write `.agents/loop.json`."""
     root = Path(repo_root)
-    manifest = detect_stack_manifest(root)
+    resolved_manifest = detect_stack_manifest(root) if manifest is None else manifest
 
     if run_dry_check:
-        verify_manifest_test_cmd(root, manifest)
+        verify_manifest_test_cmd(root, resolved_manifest, env=env)
 
     manifest_path = root / ".agents" / "loop.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(
-        json.dumps(asdict(manifest), indent=2) + "\n", encoding="utf-8"
+        json.dumps(asdict(resolved_manifest), indent=2) + "\n", encoding="utf-8"
     )
     return manifest_path

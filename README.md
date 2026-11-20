@@ -11,7 +11,7 @@ Cero dependencias externas (`pip` o `npm`): funciona únicamente con biblioteca 
 - **Google Antigravity (`agy`)** con soporte para `run_workflow`.
 - **Python 3.12+** en `PATH` (`python3` o `python`).
 - **Git 2.23+** (requerido para `git worktree` y `git restore --worktree`).
-- **Node.js 24+** (solo para ejecutar el mini-benchmark offline `benchmarks/js_fixture` con `node --test`).
+- **Node.js 24+** (solo para ejecutar el mini-benchmark offline `skills/agy-dev-loop/benchmarks/js_fixture` con `node --test`).
 
 ---
 

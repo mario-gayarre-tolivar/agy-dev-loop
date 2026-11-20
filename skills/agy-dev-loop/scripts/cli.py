@@ -25,6 +25,7 @@ from core.manifest import (  # noqa: E402
     detect_stack_manifest,
     init_manifest,
     load_manifest,
+    run_setup_cmd,
     verify_manifest_test_cmd,
 )
 from core.workflow_logic import DEFAULT_BENCHMARKS_ROOT  # noqa: E402
@@ -55,9 +56,12 @@ def _check_git_version() -> tuple[bool, str]:
 def _cmd_init(repo_root: Path, no_dry_run: bool) -> int:
     try:
         manifest = detect_stack_manifest(repo_root)
-        if not no_dry_run:
-            verify_manifest_test_cmd(repo_root, manifest, env=build_worktree_env(repo_root))
-        manifest_path = init_manifest(repo_root, run_dry_check=False)
+        manifest_path = init_manifest(
+            repo_root,
+            run_dry_check=not no_dry_run,
+            manifest=manifest,
+            env=None if no_dry_run else build_worktree_env(repo_root),
+        )
     except (ValueError, RuntimeError, OSError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
         return 1
@@ -112,31 +116,19 @@ def _cmd_doctor(repo_root: Path) -> int:
         run_id = f"doctor-{os.getpid()}"
         wt: Path | None = None
         try:
-            wt = create_isolated_worktree(repo_root, run_id)
             wt_env = build_worktree_env(repo_root)
-            if manifest.setup_cmd:
-                setup = subprocess.run(
-                    manifest.setup_cmd,
-                    cwd=wt,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=manifest.test_timeout_sec,
-                    env=wt_env,
-                )
-                if setup.returncode != 0:
-                    raise RuntimeError(
-                        f"setup_cmd failed (exit {setup.returncode}): {manifest.setup_cmd}"
-                    )
+            wt = create_isolated_worktree(repo_root, run_id)
+            run_setup_cmd(wt, manifest, env=wt_env)
             verify_manifest_test_cmd(wt, manifest, env=wt_env)
             checks["dry_run_ok"] = {"ok": True, "detail": manifest.test_cmd}
         except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
             checks["dry_run_ok"] = {"ok": False, "detail": str(exc)}
         finally:
             if wt is not None:
-                remove_isolated_worktree(repo_root, wt, run_id)
+                try:
+                    remove_isolated_worktree(repo_root, wt, run_id)
+                except (RuntimeError, OSError) as exc:
+                    checks["worktree_cleanup_error"] = {"ok": False, "detail": str(exc)}
 
     all_ok = all(item["ok"] for item in checks.values())
     print(json.dumps({"status": "ok" if all_ok else "failed", "checks": checks}))

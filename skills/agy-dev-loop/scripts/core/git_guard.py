@@ -325,7 +325,11 @@ def check_protected_tests_diff(
 ) -> tuple[bool, str]:
     """Reject deletion, renaming, or assertion-weakening of protected test files."""
     pattern = _ASSERT_RE
-    if assert_regex:
+    if assert_regex is not None:
+        if not isinstance(assert_regex, str) or not assert_regex.strip():
+            raise ValueError(
+                f"Invalid assert_regex {assert_regex!r}: must be a non-empty string"
+            )
         try:
             pattern = re.compile(assert_regex)
         except re.error as exc:

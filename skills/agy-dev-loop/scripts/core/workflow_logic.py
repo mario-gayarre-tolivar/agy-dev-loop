@@ -24,7 +24,7 @@ from core.git_guard import (
     remove_isolated_worktree,
     rollback_to_ref,
 )
-from core.manifest import load_manifest, verify_manifest_test_cmd
+from core.manifest import load_manifest, run_setup_cmd, verify_manifest_test_cmd
 from core.memory import (
     Lesson,
     RunMetrics,
@@ -116,85 +116,6 @@ def _git_head_sha(worktree_path: Path) -> str:
 def _has_worktree_changes(worktree_path: Path) -> bool:
     proc = _run_git(worktree_path, "status", "--porcelain")
     return proc.returncode == 0 and bool(proc.stdout.strip())
-
-
-def _list_worktree_paths(worktree_path: Path, *git_args: str) -> set[str]:
-    proc = _run_git(worktree_path, "-c", "core.quotePath=false", *git_args)
-    if proc.returncode != 0:
-        detail = proc.stderr.strip() or proc.stdout.strip()
-        raise RuntimeError(f"git {' '.join(git_args)} failed: {detail}")
-    return {line for line in proc.stdout.splitlines() if line.strip()}
-
-
-def _run_setup_cmd(
-    worktree_path: Path,
-    setup_cmd: str,
-    timeout_sec: int,
-    env: dict[str, str],
-) -> None:
-    """Execute `setup_cmd` inside the isolated worktree with hydrated environment."""
-    try:
-        proc = subprocess.run(
-            setup_cmd,
-            cwd=worktree_path,
-            shell=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_sec,
-            env=env,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        raise RuntimeError(
-            f"Worktree setup_cmd failed to execute ({setup_cmd}): {exc}"
-        ) from exc
-
-    if proc.returncode != 0:
-        output = "\n".join(
-            part
-            for part in ((proc.stdout or "").strip(), (proc.stderr or "").strip())
-            if part
-        )
-        raise RuntimeError(
-            f"Worktree setup_cmd failed (exit {proc.returncode}): {setup_cmd}"
-            + (f"\n{output}" if output else "")
-        )
-
-
-def _clean_dry_run_artifacts(
-    worktree_path: Path,
-    pre_untracked: set[str],
-    pre_tracked: set[str],
-) -> None:
-    """Remove stray dry-run files/edits while preserving `setup_cmd` outputs."""
-    post_untracked = _list_worktree_paths(
-        worktree_path, "ls-files", "--others", "--exclude-standard"
-    )
-    for rel in sorted(post_untracked - pre_untracked):
-        target = worktree_path / rel
-        if target.is_symlink() or target.is_file():
-            target.unlink(missing_ok=True)
-        parent = target.parent
-        while parent != worktree_path and worktree_path in parent.parents:
-            try:
-                parent.rmdir()
-            except OSError:
-                break
-            parent = parent.parent
-
-    post_tracked = _list_worktree_paths(worktree_path, "diff", "--name-only")
-    stray_tracked = post_tracked - pre_tracked
-    if stray_tracked:
-        checkout_args = (
-            ("checkout", "--", ".")
-            if not pre_tracked
-            else ("checkout", "--", *sorted(stray_tracked))
-        )
-        proc = _run_git(worktree_path, *checkout_args)
-        if proc.returncode != 0:
-            detail = proc.stderr.strip() or proc.stdout.strip()
-            raise RuntimeError(f"git checkout failed after dry-run: {detail}")
 
 
 def _read_text_if_exists(path: Path) -> str:
@@ -372,22 +293,12 @@ async def run_inner_loop(
     executor_template = (prompts_dir / "executor.md").read_text(encoding="utf-8")
     reviewer_template = (prompts_dir / "reviewer.md").read_text(encoding="utf-8")
 
-    worktree_path = create_isolated_worktree(repo_root, run_id)
     wt_env = build_worktree_env(repo_root)
+    worktree_path = create_isolated_worktree(repo_root, run_id)
     try:
-        if manifest.setup_cmd:
-            _run_setup_cmd(
-                worktree_path,
-                manifest.setup_cmd,
-                timeout_sec=manifest.test_timeout_sec,
-                env=wt_env,
-            )
-        pre_dry_untracked = _list_worktree_paths(
-            worktree_path, "ls-files", "--others", "--exclude-standard"
-        )
-        pre_dry_tracked = _list_worktree_paths(worktree_path, "diff", "--name-only")
+        run_setup_cmd(worktree_path, manifest, env=wt_env)
         verify_manifest_test_cmd(worktree_path, manifest, env=wt_env)
-        _clean_dry_run_artifacts(worktree_path, pre_dry_untracked, pre_dry_tracked)
+        rollback_to_ref(worktree_path, "HEAD")
     except Exception:
         remove_isolated_worktree(repo_root, worktree_path, run_id)
         raise
