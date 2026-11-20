@@ -175,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
 | --- | --- | --- | --- | --- | --- |
 | 1 | Intérprete Python portable, manifiesto multi-stack y nuevos campos de `LoopManifest` | `skills/agy-dev-loop/scripts/core/manifest.py` | `tests/test_manifest.py` | `C1`, `C3`, `C5` | `[x]` |
 | 2 | Entorno hidratado de worktree, teardown seguro y guardián anti-trampa multi-lenguaje | `skills/agy-dev-loop/scripts/core/git_guard.py`, `eval_runner.py` | `tests/test_git_guard.py`, `tests/test_eval_runner.py` | `C2`, `C3`, `C4`, `C5` | `[x]` |
-| 3 | Benchmarks autocontenidos en la skill y dry-run aislado dentro del worktree con `setup_cmd` | `skills/agy-dev-loop/scripts/core/optimizer_guard.py`, `workflow_logic.py` | `tests/test_optimizer_guard.py`, `tests/test_workflow_contracts.py` | `C1`, `C2`, `C4` | `[ ]` |
+| 3 | Benchmarks autocontenidos en la skill y dry-run aislado dentro del worktree con `setup_cmd` | `skills/agy-dev-loop/scripts/core/optimizer_guard.py`, `workflow_logic.py` | `tests/test_optimizer_guard.py`, `tests/test_workflow_contracts.py` | `C1`, `C2`, `C4` | `[x]` |
 | 4 | CLI pública (`init`/`doctor`), documentación sin rutas personales y suite de evaluación `C1`–`C6` | `skills/agy-dev-loop/scripts/cli.py`, `SKILL.md`, `README.md` | `tests/test_generalization_eval.py` | `C1`..`C6` | `[ ]` |
 
 ---
@@ -296,7 +296,7 @@ git commit -m "feat(guard): add worktree env hydration, safe teardown, and multi
 - Consumes: `build_worktree_env`, `remove_isolated_worktree` (Task 2), `verify_manifest_test_cmd` (Task 1), `sys.executable`
 - Produces: `DEFAULT_BENCHMARKS_ROOT = SKILL_ROOT / "benchmarks"` en `workflow_logic.py`; dry-run y `setup_cmd` ejecutados dentro de `worktree_path` con limpieza automática del worktree si fallan.
 
-- [ ] **Step 1: Mover `benchmarks/` a `skills/agy-dev-loop/benchmarks/` con `git mv` y añadir tests fallidos (`RED`) en `tests/test_optimizer_guard.py` y `tests/test_workflow_contracts.py`**
+- [x] **Step 1: Mover `benchmarks/` a `skills/agy-dev-loop/benchmarks/` con `git mv` y añadir tests fallidos (`RED`) en `tests/test_optimizer_guard.py` y `tests/test_workflow_contracts.py`**
 
 ```python
 # En tests/test_workflow_contracts.py:
@@ -308,21 +308,21 @@ def test_inner_loop_runs_setup_and_dry_run_inside_worktree_and_cleans_up_on_fail
     ...
 ```
 
-- [ ] **Step 2: Ejecutar test runner para verificar estado `RED`**
+- [x] **Step 2: Ejecutar test runner para verificar estado `RED`**
 
 Run: `python3 -m unittest tests/test_optimizer_guard.py tests/test_workflow_contracts.py -v`
 Expected: FAIL / ERROR en los tests actualizados y nuevos
 
-- [ ] **Step 3: Actualizar `optimizer_guard.py` (`sys.executable`) y `workflow_logic.py` (`DEFAULT_BENCHMARKS_ROOT = SKILL_ROOT / "benchmarks"`, hidratación `build_worktree_env`, `setup_cmd`, dry-run en worktree y `remove_isolated_worktree` si falla)**
+- [x] **Step 3: Actualizar `optimizer_guard.py` (`sys.executable`) y `workflow_logic.py` (`DEFAULT_BENCHMARKS_ROOT = SKILL_ROOT / "benchmarks"`, hidratación `build_worktree_env`, `setup_cmd`, dry-run en worktree y `remove_isolated_worktree` si falla)**
 
 En `run_inner_loop`, limpiar cualquier `.cache` creado durante el dry-run inicial en el worktree (`rollback_to_ref(worktree_path, "HEAD")`) justo después de que `verify_manifest_test_cmd` pase, para que la primera subtarea arranque con el worktree limpio.
 
-- [ ] **Step 4: Ejecutar test runner en `python3` y `python` para verificar estado `GREEN`**
+- [x] **Step 4: Ejecutar test runner en `python3` y `python` para verificar estado `GREEN`**
 
 Run: `python3 -m unittest tests/test_optimizer_guard.py tests/test_workflow_contracts.py -v && python -m unittest tests/test_optimizer_guard.py tests/test_workflow_contracts.py -v`
 Expected: PASS (`OK`)
 
-- [ ] **Step 5: Commit de Task 3**
+- [x] **Step 5: Commit de Task 3**
 
 ```bash
 git add skills/agy-dev-loop/ benchmarks/ tests/test_optimizer_guard.py tests/test_workflow_contracts.py
