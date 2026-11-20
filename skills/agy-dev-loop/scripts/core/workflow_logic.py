@@ -16,13 +16,15 @@ from core.eval_runner import (
     run_deterministic_gate,
 )
 from core.git_guard import (
+    build_worktree_env,
     capture_worktree_diff,
     checkpoint_commit,
     create_isolated_worktree,
     ensure_clean_repo,
+    remove_isolated_worktree,
     rollback_to_ref,
 )
-from core.manifest import load_manifest, verify_manifest_test_cmd
+from core.manifest import load_manifest, run_setup_cmd, verify_manifest_test_cmd
 from core.memory import (
     Lesson,
     RunMetrics,
@@ -38,7 +40,7 @@ from core.plan_tasks import (
 )
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_BENCHMARKS_ROOT = Path(__file__).resolve().parents[4] / "benchmarks"
+DEFAULT_BENCHMARKS_ROOT = SKILL_ROOT / "benchmarks"
 ALLOWED_TARGET_PROMPTS = ("executor.md", "reviewer.md")
 
 EXECUTOR_SCHEMA: dict[str, Any] = {
@@ -278,18 +280,29 @@ async def run_inner_loop(
         if args_dict.get("lessons_path")
         else (repo_root / ".agents" / "loop" / "lessons.md")
     )
-    verify_red = bool(args_dict.get("verify_red", True))
+    verify_red_arg = (
+        bool(args_dict["verify_red"])
+        if "verify_red" in args_dict and args_dict["verify_red"] is not None
+        else None
+    )
     min_runs = _require_positive_int(args_dict.get("min_runs", 3), "min_runs")
 
     phase_fn("Setup")
     manifest = load_manifest(repo_root)
     ensure_clean_repo(repo_root)
-    verify_manifest_test_cmd(repo_root, manifest)
-
     executor_template = (prompts_dir / "executor.md").read_text(encoding="utf-8")
     reviewer_template = (prompts_dir / "reviewer.md").read_text(encoding="utf-8")
 
+    wt_env = build_worktree_env(repo_root)
     worktree_path = create_isolated_worktree(repo_root, run_id)
+    try:
+        run_setup_cmd(worktree_path, manifest, env=wt_env)
+        verify_manifest_test_cmd(worktree_path, manifest, env=wt_env)
+        rollback_to_ref(worktree_path, "HEAD")
+    except Exception:
+        remove_isolated_worktree(repo_root, worktree_path, run_id)
+        raise
+
     log_fn(f"Created isolated worktree at {worktree_path} on branch agy-loop/{run_id}")
 
     try:
@@ -343,7 +356,8 @@ async def run_inner_loop(
                 worktree_path=worktree_path,
                 manifest=manifest,
                 base_ref=base_ref,
-                verify_red=verify_red,
+                verify_red=verify_red_arg,
+                env=wt_env,
             )
 
             if not gate.passed or not gate.should_run_reviewer:

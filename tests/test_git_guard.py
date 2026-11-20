@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "skills" / "agy-dev-loop" / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from core.git_guard import (  # noqa: E402
+    build_worktree_env,
+    capture_worktree_diff,
     check_protected_tests_diff,
     checkpoint_commit,
     create_isolated_worktree,
     ensure_clean_repo,
+    remove_isolated_worktree,
     rollback_to_ref,
     verify_new_tests_fail_without_prod_changes,
 )
@@ -316,7 +322,7 @@ class GitGuardTests(unittest.TestCase):
             self.assertIn("# checkpoint", calc_path.read_text(encoding="utf-8"))
 
     def test_diff_parser_resists_in_hunk_headers_gitconfig_and_spaced_paths(self) -> None:
-        from core.git_guard import _has_added_test_lines  # noqa: PLC0415
+        from core.git_guard import _has_added_test_lines, _iter_diff_hunk_lines  # noqa: PLC0415
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -368,14 +374,21 @@ class GitGuardTests(unittest.TestCase):
             self.assertIn("tests/test_calc.py", reason)
             test_calc.write_text(orig_test_calc, encoding="utf-8")
 
-            # 2. Removing a line starting with `-- assert` (renders as `--- assert...` in diff)
-            #    must be counted as a removed assertion, not skipped as a file header!
+            # 2. Removing a line starting with `-- ` (renders as `--- ...` in diff)
+            #    must still be yielded by `_iter_diff_hunk_lines` (not skipped as a file header),
+            #    and must not break hunk tracking for subsequent assertion removals!
             orig_tricky = tricky_js.read_text(encoding="utf-8")
             tricky_js.write_text(
                 "const x = 1;\n"
                 "expect(x).toBe(1);\n",
                 encoding="utf-8",
             )
+            tricky_diff = capture_worktree_diff(repo, base_ref)
+            self.assertIn(
+                ("tests/tricky.test.js", "--- assert(x === 1);"),
+                list(_iter_diff_hunk_lines(tricky_diff)),
+            )
+            tricky_js.write_text("const x = 1;\n", encoding="utf-8")
             ok, reason = check_protected_tests_diff(repo, base_ref, protected)
             self.assertFalse(ok)
             self.assertIn("tests/tricky.test.js", reason)
@@ -429,6 +442,237 @@ class GitGuardTests(unittest.TestCase):
 
             with self.assertRaises(RuntimeError):
                 capture_worktree_diff(repo, "nonexistent-ref-deadbeef")
+
+    def test_build_worktree_env_hydrates_venv_and_node_modules_and_remove_worktree_cleans_up(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_sample_repo(repo)
+
+            venv_scripts = repo / ".venv" / "Scripts"
+            venv_bin = repo / ".venv" / "bin"
+            fallback_venv_bin = repo / "venv" / "bin"
+            node_bin = repo / "node_modules" / ".bin"
+            for d in (venv_scripts, venv_bin, fallback_venv_bin, node_bin):
+                d.mkdir(parents=True, exist_ok=True)
+
+            env = build_worktree_env(
+                repo,
+                base_env={"Path": "C:\\Base\\Bin", "NODE_PATH": "C:\\Base\\Node"},
+            )
+            self.assertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+            self.assertEqual(env["VIRTUAL_ENV"], str((repo / ".venv").resolve()))
+            self.assertEqual(
+                env["NODE_PATH"],
+                f"{(repo / 'node_modules').resolve()}{os.pathsep}C:\\Base\\Node",
+            )
+            self.assertIn("Path", env)
+            self.assertNotIn("PATH", env)
+            path_parts = env["Path"].split(os.pathsep)
+            self.assertEqual(
+                path_parts,
+                [
+                    str(venv_scripts.resolve()),
+                    str(venv_bin.resolve()),
+                    str(node_bin.resolve()),
+                    "C:\\Base\\Bin",
+                ],
+            )
+            self.assertNotIn(str(fallback_venv_bin.resolve()), path_parts)
+
+            clean_env = build_worktree_env(repo, base_env={})
+            self.assertEqual(clean_env["NODE_PATH"], str((repo / "node_modules").resolve()))
+            self.assertIn(str(node_bin.resolve()), clean_env["PATH"].split(os.pathsep))
+
+            for bad_id in ("../escape", "a/b", "-flag", "bad id", "", "..", "."):
+                with self.assertRaises(ValueError):
+                    remove_isolated_worktree(repo, repo / ".agents" / "worktrees" / "x", bad_id)
+
+            wt = create_isolated_worktree(repo, "cleanup-1")
+            self.assertTrue(wt.is_dir())
+            remove_isolated_worktree(repo, wt, "cleanup-1")
+            self.assertFalse(wt.exists())
+            branch_ref = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", "refs/heads/agy-loop/cleanup-1"],
+                cwd=repo,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(branch_ref.returncode, 0)
+            # Already-deleted worktree and branch should be tolerated cleanly.
+            remove_isolated_worktree(repo, wt, "cleanup-1")
+
+    def test_remove_isolated_worktree_prunes_manually_deleted_dir_and_raises_on_stuck_cleanup(
+        self,
+    ) -> None:
+        from core import git_guard  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_sample_repo(repo)
+
+            # 1. Manual directory deletion: git worktree prune unblocks branch -D.
+            wt_manual = create_isolated_worktree(repo, "manual-del")
+            shutil.rmtree(wt_manual)
+            self.assertFalse(wt_manual.exists())
+            remove_isolated_worktree(repo, wt_manual, "manual-del")
+            branch_ref = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", "refs/heads/agy-loop/manual-del"],
+                cwd=repo,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(branch_ref.returncode, 0)
+
+            # 2. Failed worktree remove while directory still exists raises RuntimeError.
+            wt_stuck = create_isolated_worktree(repo, "stuck-wt")
+            real_run_git = git_guard._run_git
+            try:
+                def _fail_worktree_remove(
+                    cwd: Path, *args: str
+                ) -> subprocess.CompletedProcess[str]:
+                    if args[:2] == ("worktree", "remove"):
+                        return subprocess.CompletedProcess(
+                            ["git", *args], 1, "", "worktree locked"
+                        )
+                    return real_run_git(cwd, *args)
+
+                with mock.patch.object(
+                    git_guard, "_run_git", side_effect=_fail_worktree_remove
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "worktree locked"):
+                        remove_isolated_worktree(repo, wt_stuck, "stuck-wt")
+            finally:
+                remove_isolated_worktree(repo, wt_stuck, "stuck-wt")
+
+            # 3. Failed branch -D while branch still exists raises RuntimeError.
+            wt_branch = create_isolated_worktree(repo, "stuck-branch")
+            try:
+                def _fail_branch_delete(
+                    cwd: Path, *args: str
+                ) -> subprocess.CompletedProcess[str]:
+                    if args[:2] == ("branch", "-D"):
+                        return subprocess.CompletedProcess(
+                            ["git", *args], 1, "", "branch locked"
+                        )
+                    return real_run_git(cwd, *args)
+
+                with mock.patch.object(
+                    git_guard, "_run_git", side_effect=_fail_branch_delete
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "branch locked"):
+                        remove_isolated_worktree(repo, wt_branch, "stuck-branch")
+            finally:
+                remove_isolated_worktree(repo, wt_branch, "stuck-branch")
+
+    def test_multilang_assertions_mnemonic_prefix_and_comment_styles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _init_sample_repo(repo)
+            _run_git(repo, "config", "diff.mnemonicPrefix", "true")
+
+            files = {
+                "tests/math_test.go": (
+                    "package math\n"
+                    'import "testing"\n'
+                    "func TestAdd(t *testing.T) {\n"
+                    '    t.Fatalf("expected 3")\n'
+                    "}\n"
+                ),
+                "tests/lib_test.rs": (
+                    "#[test]\n"
+                    "fn test_add() {\n"
+                    "    assert_eq!(1 + 2, 3);\n"
+                    "}\n"
+                ),
+                "tests/CalcTest.java": (
+                    "class CalcTest {\n"
+                    "    void testAdd() {\n"
+                    "        Assert.assertEquals(3, 1 + 2);\n"
+                    "    }\n"
+                    "}\n"
+                ),
+                "tests/CalcTests.cs": (
+                    "class CalcTests {\n"
+                    "    void TestAdd() {\n"
+                    "        result.Should().Be(3);\n"
+                    "    }\n"
+                    "}\n"
+                ),
+                "tests/custom.test.sql": "CALL check_eq(1, 1);\n",
+            }
+            for rel, content in files.items():
+                (repo / rel).write_text(content, encoding="utf-8")
+            _run_git(repo, "add", "-A")
+            _run_git(repo, "commit", "-m", "add multilang tests")
+            base_ref = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+            protected = (
+                "tests/**",
+                "**/*_test.go",
+                "**/*_test.rs",
+                "**/*Test.java",
+                "**/*Tests.cs",
+                "**/*.test.*",
+            )
+
+            # Removing assertions in Go, Rust, Java, and C# must be blocked under mnemonicPrefix=true.
+            for rel, replacement in (
+                ("tests/math_test.go", "package math\nfunc TestAdd() {}\n"),
+                ("tests/lib_test.rs", "#[test]\nfn test_add() {}\n"),
+                ("tests/CalcTest.java", "class CalcTest {\n    void testAdd() {}\n}\n"),
+                ("tests/CalcTests.cs", "class CalcTests {\n    void TestAdd() {}\n}\n"),
+            ):
+                target = repo / rel
+                original = files[rel]
+                target.write_text(replacement, encoding="utf-8")
+                ok, reason = check_protected_tests_diff(repo, base_ref, protected)
+                self.assertFalse(ok, msg=f"Expected weakening block for {rel}")
+                self.assertIn(rel, reason)
+                target.write_text(original, encoding="utf-8")
+
+            # Commenting out an assertion with `--` or `/* ... */` must be blocked.
+            java_file = repo / "tests" / "CalcTest.java"
+            java_orig = files["tests/CalcTest.java"]
+            for commented in (
+                java_orig.replace(
+                    "        Assert.assertEquals(3, 1 + 2);",
+                    "        -- Assert.assertEquals(3, 1 + 2);",
+                ),
+                java_orig.replace(
+                    "        Assert.assertEquals(3, 1 + 2);",
+                    "        /* Assert.assertEquals(3, 1 + 2); */",
+                ),
+            ):
+                java_file.write_text(commented, encoding="utf-8")
+                ok, reason = check_protected_tests_diff(repo, base_ref, protected)
+                self.assertFalse(ok)
+                self.assertIn("tests/CalcTest.java", reason)
+            java_file.write_text(java_orig, encoding="utf-8")
+
+            # Custom assert_regex catches domain-specific assertion removal.
+            sql_file = repo / "tests" / "custom.test.sql"
+            sql_file.write_text("-- removed\n", encoding="utf-8")
+            ok_default, _ = check_protected_tests_diff(repo, base_ref, protected)
+            self.assertTrue(ok_default)
+            ok_custom, reason_custom = check_protected_tests_diff(
+                repo, base_ref, protected, assert_regex=r"\bcheck_eq\("
+            )
+            self.assertFalse(ok_custom)
+            self.assertIn("tests/custom.test.sql", reason_custom)
+
+            for bad_regex in ("[invalid", "", "   "):
+                with self.assertRaises(ValueError):
+                    check_protected_tests_diff(
+                        repo, base_ref, protected, assert_regex=bad_regex
+                    )
+
+            # Assert_regex preserves intentional spaces (doesn't strip)
+            ok_spaced, _ = check_protected_tests_diff(
+                repo, base_ref, protected, assert_regex=" check_eq\\( "
+            )
+            self.assertTrue(ok_spaced)
 
 
 if __name__ == "__main__":

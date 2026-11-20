@@ -83,9 +83,12 @@ class OptimizerGuardTests(unittest.TestCase):
 
     def test_offline_benchmarks_pass_with_stdlib_runners(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
-        passed, details = run_offline_benchmarks(repo_root / "benchmarks")
+        benchmarks_root = repo_root / "skills" / "agy-dev-loop" / "benchmarks"
+        passed, details = run_offline_benchmarks(benchmarks_root)
         self.assertTrue(passed)
         self.assertEqual(details, {"py_fixture": True, "js_fixture": True})
+        self.assertFalse((benchmarks_root / "py_fixture" / "__pycache__").exists())
+        self.assertFalse((benchmarks_root / "py_fixture" / "tests" / "__pycache__").exists())
 
     def test_stage_and_validate_global_patch_rolls_back_on_benchmark_failure(self) -> None:
         prefix = "# Frozen Header\r\n"
@@ -135,7 +138,7 @@ class OptimizerGuardTests(unittest.TestCase):
             ok, summary = stage_and_validate_global_patch(
                 prompt_path=prompt_path,
                 candidate_rules=[PromptRule(rule_id="r1", text="Verified rule")],
-                benchmarks_root=repo_root / "benchmarks",
+                benchmarks_root=repo_root / "skills" / "agy-dev-loop" / "benchmarks",
             )
             self.assertTrue(ok)
             self.assertIn("Verified rule", summary)

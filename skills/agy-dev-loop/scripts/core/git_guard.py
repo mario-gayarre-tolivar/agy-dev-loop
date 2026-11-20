@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-_ASSERT_RE = re.compile(r"\b(?:assert\w*|strictEqual|deepStrictEqual)\b|expect\(")
+_ASSERT_RE = re.compile(
+    r"\b(?:assert\w*|strictEqual|deepStrictEqual)\b"
+    r"|expect\("
+    r"|\b(?:t|b)\.(?:Error|Errorf|Fatal|Fatalf|Fail|FailNow)\b"
+    r"|\brequire\.\w+\("
+    r"|\bAssert(?:ions)?\.\w+\("
+    r"|\.Should\("
+)
+_COMMENT_PREFIXES = ("#", "//", "--", "/*", "*", "*/")
 _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
@@ -32,6 +41,8 @@ def _run_git_diff(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         "core.quotePath=false",
         "-c",
         "diff.noprefix=false",
+        "-c",
+        "diff.mnemonicPrefix=false",
         "diff",
         "--no-ext-diff",
         *args,
@@ -76,11 +87,7 @@ def ensure_clean_repo(repo_root: Path) -> None:
         raise RuntimeError(f"Repository has uncommitted changes: {root}")
 
 
-def create_isolated_worktree(repo_root: Path, run_id: str) -> Path:
-    """Create an isolated git worktree on branch `agy-loop/<run_id>`."""
-    root = Path(repo_root)
-    ensure_clean_repo(root)
-
+def _validate_run_id(run_id: str) -> None:
     if (
         not _RUN_ID_RE.fullmatch(run_id)
         or run_id in {".", ".."}
@@ -88,6 +95,55 @@ def create_isolated_worktree(repo_root: Path, run_id: str) -> Path:
         or run_id.startswith("-")
     ):
         raise ValueError(f"Invalid run_id: {run_id!r}")
+
+
+def build_worktree_env(
+    repo_root: Path,
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build an isolated subprocess environment hydrated with `.venv`/`venv` and `node_modules`."""
+    root = Path(repo_root)
+    env = dict(os.environ if base_env is None else base_env)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    extra_bins: list[str] = []
+
+    for venv_name in (".venv", "venv"):
+        venv_dir = root / venv_name
+        if venv_dir.is_dir():
+            for sub in ("Scripts", "bin"):
+                bin_dir = venv_dir / sub
+                if bin_dir.is_dir():
+                    extra_bins.append(str(bin_dir.resolve()))
+            env["VIRTUAL_ENV"] = str(venv_dir.resolve())
+            break
+
+    node_modules = root / "node_modules"
+    if node_modules.is_dir():
+        node_bin = node_modules / ".bin"
+        if node_bin.is_dir():
+            extra_bins.append(str(node_bin.resolve()))
+        resolved_nm = str(node_modules.resolve())
+        existing_node_path = env.get("NODE_PATH", "")
+        env["NODE_PATH"] = (
+            f"{resolved_nm}{os.pathsep}{existing_node_path}"
+            if existing_node_path
+            else resolved_nm
+        )
+
+    if extra_bins:
+        path_key = next((k for k in env if k.upper() == "PATH"), "PATH")
+        existing_path = env.get(path_key, "")
+        prefix = os.pathsep.join(extra_bins)
+        env[path_key] = f"{prefix}{os.pathsep}{existing_path}" if existing_path else prefix
+
+    return env
+
+
+def create_isolated_worktree(repo_root: Path, run_id: str) -> Path:
+    """Create an isolated git worktree on branch `agy-loop/<run_id>`."""
+    root = Path(repo_root)
+    ensure_clean_repo(root)
+    _validate_run_id(run_id)
 
     worktree_path = root / ".agents" / "worktrees" / run_id
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +162,37 @@ def create_isolated_worktree(repo_root: Path, run_id: str) -> Path:
         detail = proc.stderr.strip() or proc.stdout.strip()
         raise RuntimeError(f"Failed to create git worktree at {worktree_path}: {detail}")
     return worktree_path
+
+
+def remove_isolated_worktree(
+    repo_root: Path,
+    worktree_path: Path,
+    run_id: str,
+) -> None:
+    """Remove an isolated worktree, prune stale registrations, and delete `agy-loop/<run_id>`."""
+    _validate_run_id(run_id)
+    root = Path(repo_root)
+    wt = Path(worktree_path)
+    branch_name = f"agy-loop/{run_id}"
+
+    rm_proc = _run_git(root, "worktree", "remove", "--force", str(wt))
+    if rm_proc.returncode != 0 and wt.exists():
+        detail = rm_proc.stderr.strip() or rm_proc.stdout.strip()
+        raise RuntimeError(f"Failed to remove git worktree at {wt}: {detail}")
+
+    _run_git(root, "worktree", "prune")
+
+    br_proc = _run_git(root, "branch", "-D", branch_name)
+    if br_proc.returncode != 0:
+        still_exists = (
+            _run_git(
+                root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"
+            ).returncode
+            == 0
+        )
+        if still_exists:
+            detail = br_proc.stderr.strip() or br_proc.stdout.strip()
+            raise RuntimeError(f"Failed to delete branch {branch_name}: {detail}")
 
 
 def capture_worktree_diff(worktree_path: Path, base_ref: str) -> str:
@@ -213,15 +300,19 @@ def _iter_diff_hunk_lines(diff_text: str) -> Iterator[tuple[str, str]]:
             in_hunk = old_remaining > 0 or new_remaining > 0
 
 
-def _parse_diff_counts(diff_text: str) -> dict[str, tuple[int, int]]:
+def _parse_diff_counts(
+    diff_text: str,
+    assert_pattern: re.Pattern[str] = _ASSERT_RE,
+) -> dict[str, tuple[int, int]]:
     """Return `{posix_path: (removed_assertions, added_assertions)}` from unified diff."""
     counts: dict[str, list[int]] = {}
     for current_file, line in _iter_diff_hunk_lines(diff_text):
         pair = counts.setdefault(current_file, [0, 0])
         body = line[1:]
-        if body.lstrip().startswith(("#", "//")):
+        # shortcut: line-start comment filter only; inline trailing comments after code are not stripped
+        if body.lstrip().startswith(_COMMENT_PREFIXES):
             continue
-        if _ASSERT_RE.search(body):
+        if assert_pattern.search(body):
             pair[0 if line.startswith("-") else 1] += 1
     return {path: (pair[0], pair[1]) for path, pair in counts.items()}
 
@@ -230,8 +321,20 @@ def check_protected_tests_diff(
     worktree_path: Path,
     base_ref: str,
     protected_globs: tuple[str, ...],
+    assert_regex: str | None = None,
 ) -> tuple[bool, str]:
     """Reject deletion, renaming, or assertion-weakening of protected test files."""
+    pattern = _ASSERT_RE
+    if assert_regex is not None:
+        if not isinstance(assert_regex, str) or not assert_regex.strip():
+            raise ValueError(
+                f"Invalid assert_regex {assert_regex!r}: must be a non-empty string"
+            )
+        try:
+            pattern = re.compile(assert_regex)
+        except re.error as exc:
+            raise ValueError(f"Invalid assert_regex {assert_regex!r}: {exc}") from exc
+
     wt = Path(worktree_path)
     name_status = _run_git_diff(wt, "--name-status", base_ref)
     if name_status.returncode != 0:
@@ -258,7 +361,7 @@ def check_protected_tests_diff(
         detail = diff_proc.stderr.strip() or diff_proc.stdout.strip()
         raise RuntimeError(f"git diff failed: {detail}")
 
-    for rel_path, (removed, added) in _parse_diff_counts(diff_proc.stdout).items():
+    for rel_path, (removed, added) in _parse_diff_counts(diff_proc.stdout, pattern).items():
         if _is_protected(rel_path, protected_globs) and removed > added:
             return (
                 False,
@@ -284,6 +387,8 @@ def verify_new_tests_fail_without_prod_changes(
     base_ref: str,
     protected_globs: tuple[str, ...],
     test_cmd: str,
+    timeout_sec: int = 120,
+    env: dict[str, str] | None = None,
 ) -> tuple[bool, str]:
     """Verify newly added/updated tests fail (RED) when production changes are reverted."""
     wt = Path(worktree_path)
@@ -326,7 +431,8 @@ def verify_new_tests_fail_without_prod_changes(
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=60,
+            timeout=timeout_sec,
+            env=env,
         )
 
     if not prod_files:

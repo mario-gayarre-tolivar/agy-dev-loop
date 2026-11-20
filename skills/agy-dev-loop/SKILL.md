@@ -12,27 +12,32 @@ description: >-
 
 Plan-driven development loop for Google Antigravity (`agy`) built purely on Python stdlib (`>=3.12`), Git worktrees, and `run_workflow`.
 
-## 1. Bootstrap `.agents/loop.json`
+## 1. Bootstrap & Doctor (`.agents/loop.json`)
 
-Before running the inner loop on a repository, ensure the working tree is clean and initialize `.agents/loop.json` with a dry-run check of the project's test command:
+Before running the inner loop on a repository, bootstrap `.agents/loop.json` with `cli.py init` (wraps stack auto-detection and `init_manifest` with hydrated worktree env dry-run):
 
-```python
-import sys
-from pathlib import Path
+```bash
+python3 <path-to-skill>/scripts/cli.py init --repo <abs-repo-path>
+```
 
-sys.path.insert(0, str(Path("<path-to-skill>/scripts").resolve()))
-from core.manifest import init_manifest
+Auto-detected stacks: Python (`pytest`, `unittest`, Django `manage.py`), Node/JS (`npm`, `pnpm`, `yarn`, `bun`, `node --test`), Go (`go.mod`), Rust (`Cargo.toml`), Java (`pom.xml`/Maven wrapper, Gradle), and .NET (`*.sln`/`*.csproj`).
 
-manifest_path = init_manifest(Path("<repo-root>"), run_dry_check=True)
+Commit `.agents/loop.json` and add `.agents/worktrees/` and `.agents/loop/` to `.gitignore` so `ensure_clean_repo` passes across runs (teams tracking `.agents/loop/lessons.md` should ignore `.agents/loop/telemetry/` instead and commit `lessons.md` before each run).
+
+Verify readiness cleanly (runs dry-run inside a temporary worktree without dirtying the repo):
+
+```bash
+python3 <path-to-skill>/scripts/cli.py doctor --repo <abs-repo-path>
 ```
 
 `.agents/loop.json` schema:
-- `test_cmd` (required): command that exits `0` on passing tests.
-- `lint_cmd`, `build_cmd` (optional): additional deterministic checks.
-- `protected_test_globs` (default: `["tests/**", "test/**", "**/*.test.*", "**/*.spec.*"]`).
+- `test_cmd` (required): non-interactive command exiting `0` on passing tests.
+- `lint_cmd`, `build_cmd`, `setup_cmd` (optional): additional checks or worktree bootstrap command (runs once after worktree creation).
+- `protected_test_globs` (default covers `tests/**`, `test/**`, Python, JS/TS, Go, Rust, Java, and C# test patterns).
 - `max_iter` (default: `5`), `circuit_breaker` (default: `3`).
-
-Commit `.agents/loop.json` and add `.agents/worktrees/` and `.agents/loop/` to `.gitignore` so `ensure_clean_repo` passes across runs (teams that want to track `.agents/loop/lessons.md` in Git should ignore `.agents/loop/telemetry/` instead and commit `lessons.md` before the next run).
+- `verify_red` (default: `true`): set `false` for non-TDD tasks (e.g., config/schema validation).
+- `test_timeout_sec` (default: `120`): timeout for `setup_cmd`, `verify_red`, and gate commands.
+- `assert_regex` (optional): custom regex overriding built-in assertion detection in `git_guard`.
 
 ## 2. Run Inner Loop (`inner_loop.py`)
 
@@ -51,11 +56,12 @@ run_workflow(
 
 Behavior:
 - Validates `.agents/loop.json` and a clean git working tree before creating `.agents/worktrees/<run_id>`.
-- Runs Executor on `workspace="inherit"` (starting on `flash`, escalating to `pro` on repeated error fingerprint or 2 consecutive failures; aborts at `circuit_breaker`).
-- Short-circuits the Reviewer (`model="inherit"`) until `git_guard`, `RED` verification, `test_cmd`, `lint_cmd`, and `build_cmd` all pass.
+- Hydrates worktree env (`PATH` for `.venv`/`venv` and `node_modules/.bin`, `VIRTUAL_ENV`, `NODE_PATH`), runs optional `setup_cmd`, verifies `test_cmd` dry-run inside the worktree, and cleans stray dry-run artifacts.
+- Runs Executor on `workspace="inherit"` (`flash` -> `pro` on repeated error fingerprint or 2 consecutive failures; aborts at `circuit_breaker`).
+- Short-circuits the Reviewer (`model="inherit"`) until `git_guard`, `verify_red`, `test_cmd`, `lint_cmd`, and `build_cmd` all pass.
 - Gives the Reviewer only the subtask, `git diff`, and deterministic gate output (never Executor history).
 - On approval, marks the subtask `[x]` and creates a checkpoint commit; on failure, rolls back cleanly to the last checkpoint.
-- Writes run telemetry JSON to `.agents/loop/telemetry/` and updates `.agents/loop/lessons.md` (pruned to `<= 12` lessons and `<= 600` estimated tokens).
+- Writes run telemetry JSON to `.agents/loop/telemetry/` and updates `.agents/loop/lessons.md` (`<= 12` lessons, `<= 600` estimated tokens).
 
 ## 3. Run Outer Loop (`outer_loop.py`)
 
@@ -73,9 +79,9 @@ run_workflow(
 
 ## 4. Human Approval Gate
 
-By default (`apply_approved` omitted or `False`), `outer_loop.py` **never mutates** the active prompt files:
-1. The Optimizer proposes `<= 12` bounded rules (`<= 600` tokens) targeting `executor.md` or `reviewer.md`.
-2. `stage_and_validate_global_patch` validates markers, budgets, and offline benchmarks (`benchmarks/py_fixture` and `benchmarks/js_fixture`), generating a unified diff.
-3. The active prompt file is restored byte-for-byte to its original content, and the workflow returns `status: "staged_pending_approval"` with `proposed_diff` and `rationale`.
+By default (`apply_approved` omitted or `False`), `outer_loop.py` **never mutates** active prompt files:
+1. Optimizer proposes `<= 12` bounded rules (`<= 600` tokens) targeting `executor.md` or `reviewer.md`.
+2. `stage_and_validate_global_patch` validates markers, budgets, and self-contained offline benchmarks (`<path-to-skill>/benchmarks/py_fixture` and `js_fixture`), generating a unified diff.
+3. The active prompt file is restored byte-for-byte, returning `status: "staged_pending_approval"` with `proposed_diff` and `rationale`.
 
-Only after a human explicitly reviews and approves `proposed_diff`, re-run `outer_loop.py` with `"apply_approved": True` and `"approved_proposal"` set to the reviewed proposal object to validate and promote the rules into `## Reglas Aprendidas`.
+Only after explicit human review, re-run `outer_loop.py` with `"apply_approved": True` and `"approved_proposal"` set to the reviewed proposal object to persist rules into `## Reglas Aprendidas`.

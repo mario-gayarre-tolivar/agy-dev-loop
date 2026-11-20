@@ -26,6 +26,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from core.optimizer_guard import LEARNED_RULES_END, LEARNED_RULES_START  # noqa: E402
 from core.workflow_logic import (  # noqa: E402
+    DEFAULT_BENCHMARKS_ROOT,
     EXECUTOR_SCHEMA,
     OPTIMIZER_SCHEMA,
     REVIEWER_SCHEMA,
@@ -433,7 +434,8 @@ class WorkflowContractTests(unittest.TestCase):
             prompts_copy = root / "prompts"
             shutil.copytree(PROMPTS_DIR, prompts_copy)
             metrics_dir = root / "telemetry"
-            benchmarks_root = REPO_ROOT / "benchmarks"
+            self.assertEqual(DEFAULT_BENCHMARKS_ROOT, SKILL_DIR / "benchmarks")
+            benchmarks_root = DEFAULT_BENCHMARKS_ROOT
 
             executor_prompt_path = prompts_copy / "executor.md"
             original_bytes = executor_prompt_path.read_bytes()
@@ -601,13 +603,13 @@ class WorkflowContractTests(unittest.TestCase):
                 {
                     "metrics_dir": str(metrics_dir),
                     "prompts_dir": str(prompts_copy),
-                    "benchmarks_root": str(REPO_ROOT / "benchmarks"),
+                    "benchmarks_root": str(DEFAULT_BENCHMARKS_ROOT),
                     "apply_approved": True,
                 },
                 {
                     "metrics_dir": str(metrics_dir),
                     "prompts_dir": str(prompts_copy),
-                    "benchmarks_root": str(REPO_ROOT / "benchmarks"),
+                    "benchmarks_root": str(DEFAULT_BENCHMARKS_ROOT),
                     "apply_approved": True,
                     "approved_proposal": "not-a-dict",
                 },
@@ -816,6 +818,321 @@ class WorkflowContractTests(unittest.TestCase):
                     repo, "branch", "--list", f"agy-loop/{run_id}"
                 ).stdout.strip()
                 self.assertEqual(branches, "")
+                self.assertEqual(_run_git(repo, "status", "--porcelain").stdout.strip(), "")
+                self.assertNotIn(
+                    run_id,
+                    _run_git(repo, "worktree", "list", "--porcelain").stdout,
+                )
+            finally:
+                _remove_worktree_safe(repo, expected_wt)
+
+    def test_inner_loop_runs_setup_and_dry_run_inside_worktree_without_dirtying_repo_root(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            plan_path = _init_loop_repo(repo)
+
+            gitignore = repo / ".gitignore"
+            gitignore.write_text(
+                gitignore.read_text(encoding="utf-8") + ".venv/\n.setup_ready\n",
+                encoding="utf-8",
+            )
+
+            venv_scripts = repo / ".venv" / "Scripts"
+            venv_bin = repo / ".venv" / "bin"
+            venv_scripts.mkdir(parents=True, exist_ok=True)
+            venv_bin.mkdir(parents=True, exist_ok=True)
+
+            setup_py = (
+                "from pathlib import Path; "
+                "Path('.setup_ready').write_text('ok', encoding='utf-8')"
+            )
+            test_py = (
+                "import pathlib, subprocess, sys; "
+                "assert pathlib.Path('.setup_ready').is_file(), 'missing setup marker'; "
+                "pathlib.Path('.cache_artifact').write_text('stray', encoding='utf-8'); "
+                "sys.exit(subprocess.call([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests', '-v']))"
+            )
+            (venv_scripts / "local_setup.cmd").write_text(
+                f'@echo off\r\n"{sys.executable}" -c "{setup_py}"\r\n',
+                encoding="utf-8",
+            )
+            (venv_scripts / "local_test.cmd").write_text(
+                f'@echo off\r\n"{sys.executable}" -c "{test_py}"\r\n',
+                encoding="utf-8",
+            )
+            for name, body in (("local_setup", setup_py), ("local_test", test_py)):
+                tool = venv_bin / name
+                tool.write_text(
+                    f'#!/bin/sh\n"{sys.executable}" -c "{body}"\n',
+                    encoding="utf-8",
+                )
+                tool.chmod(0o755)
+
+            manifest_path = repo / ".agents" / "loop.json"
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_data["setup_cmd"] = "local_setup"
+            manifest_data["test_cmd"] = "local_test"
+            manifest_path.write_text(
+                json.dumps(manifest_data, indent=2) + "\n", encoding="utf-8"
+            )
+            _run_git(repo, "add", ".gitignore", ".agents/loop.json")
+            _run_git(repo, "commit", "-m", "configure setup_cmd and hydrated test_cmd")
+
+            run_id = "run-setup-isolated"
+            expected_wt = repo / ".agents" / "worktrees" / run_id
+            exec_attempts = 0
+
+            async def fake_agent(
+                prompt: str,
+                schema: dict[str, Any],
+                role: str = "",
+                workspace: str = "inherit",
+                model: str = "inherit",
+            ) -> dict[str, Any]:
+                nonlocal exec_attempts
+                if schema is EXECUTOR_SCHEMA:
+                    exec_attempts += 1
+                    self.assertTrue((expected_wt / ".setup_ready").is_file())
+                    self.assertFalse((expected_wt / ".cache_artifact").exists())
+                    self.assertFalse((repo / ".setup_ready").exists())
+                    self.assertFalse((repo / ".cache_artifact").exists())
+
+                    if exec_attempts == 1:
+                        # Attempt 1 breaks calc.py -> triggers rollback_to_ref(base_ref)
+                        (expected_wt / "calc.py").write_text(
+                            "def add(a: int, b: int) -> int:\n    return 999\n",
+                            encoding="utf-8",
+                        )
+                        return {
+                            "subtask_index": 0,
+                            "files_changed": ["calc.py"],
+                            "test_files_touched": [],
+                            "summary": "broken attempt",
+                        }
+
+                    # Attempt 2: calc.py was rolled back, AND gitignored .setup_ready survived rollback
+                    self.assertIn("return a + b", (expected_wt / "calc.py").read_text(encoding="utf-8"))
+                    (expected_wt / "calc.py").write_text(
+                        "def add(a: int, b: int) -> int:\n"
+                        "    return a + b\n\n\n"
+                        "def sub(a: int, b: int) -> int:\n"
+                        "    return a - b\n",
+                        encoding="utf-8",
+                    )
+                    (expected_wt / "tests" / "test_calc.py").write_text(
+                        "import unittest\n"
+                        "from calc import add, sub\n\n\n"
+                        "class CalcTests(unittest.TestCase):\n"
+                        "    def test_add(self) -> None:\n"
+                        "        self.assertEqual(add(1, 2), 3)\n\n"
+                        "    def test_sub(self) -> None:\n"
+                        "        self.assertEqual(sub(5, 2), 3)\n",
+                        encoding="utf-8",
+                    )
+                    return {
+                        "subtask_index": 0,
+                        "files_changed": ["calc.py", "tests/test_calc.py"],
+                        "test_files_touched": ["tests/test_calc.py"],
+                        "summary": "implement sub",
+                    }
+                return {"approved": True, "blocking_issues": [], "lesson_candidate": None}
+
+            try:
+                result = asyncio.run(
+                    run_inner_loop(
+                        {
+                            "repo_root": str(repo),
+                            "plan_path": str(plan_path),
+                            "run_id": run_id,
+                        },
+                        fake_agent,
+                        lambda _name: None,
+                        lambda *_args: None,
+                    )
+                )
+                self.assertEqual(exec_attempts, 2)
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["rollbacks"], 1)
+                self.assertEqual(result["subtasks_passed"], 1)
+                self.assertTrue((expected_wt / ".setup_ready").is_file())
+                self.assertNotIn(
+                    ".setup_ready",
+                    _run_git(expected_wt, "show", "--stat", "HEAD").stdout,
+                )
+                self.assertEqual(_run_git(repo, "status", "--porcelain").stdout.strip(), "")
+                self.assertFalse((repo / ".setup_ready").exists())
+                self.assertFalse((repo / ".cache_artifact").exists())
+            finally:
+                _remove_worktree_safe(repo, expected_wt)
+
+    def test_inner_loop_fails_when_setup_cmd_produces_unignored_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            plan_path = _init_loop_repo(repo)
+
+            manifest_path = repo / ".agents" / "loop.json"
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_data["setup_cmd"] = (
+                f'"{sys.executable}" -c "from pathlib import Path; '
+                "Path('.unignored_setup_file').write_text('dirty', encoding='utf-8')\""
+            )
+            manifest_path.write_text(
+                json.dumps(manifest_data, indent=2) + "\n", encoding="utf-8"
+            )
+            _run_git(repo, "add", ".agents/loop.json")
+            _run_git(repo, "commit", "-m", "add unignored setup_cmd")
+
+            run_id = "run-setup-unignored"
+            expected_wt = repo / ".agents" / "worktrees" / run_id
+            agent_called = False
+
+            async def fail_if_called(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                nonlocal agent_called
+                agent_called = True
+                raise AssertionError("agent_fn must not be invoked on unignored setup_cmd output")
+
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    asyncio.run(
+                        run_inner_loop(
+                            {
+                                "repo_root": str(repo),
+                                "plan_path": str(plan_path),
+                                "run_id": run_id,
+                            },
+                            fail_if_called,
+                            lambda _name: None,
+                            lambda *_args: None,
+                        )
+                    )
+                self.assertIn(".gitignore", str(ctx.exception))
+                self.assertIn(".unignored_setup_file", str(ctx.exception))
+                self.assertFalse(agent_called)
+                self.assertFalse(expected_wt.exists())
+                self.assertEqual(
+                    _run_git(repo, "branch", "--list", f"agy-loop/{run_id}").stdout.strip(),
+                    "",
+                )
+                self.assertNotIn(
+                    run_id,
+                    _run_git(repo, "worktree", "list", "--porcelain").stdout,
+                )
+                self.assertEqual(_run_git(repo, "status", "--porcelain").stdout.strip(), "")
+            finally:
+                _remove_worktree_safe(repo, expected_wt)
+
+    def test_inner_loop_forwards_verify_red_false_argument(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            plan_path = _init_loop_repo(repo)
+            run_id = "run-verify-red-false"
+            expected_wt = repo / ".agents" / "worktrees" / run_id
+            reviewer_prompts: list[str] = []
+
+            async def fake_agent(
+                prompt: str,
+                schema: dict[str, Any],
+                role: str = "",
+                workspace: str = "inherit",
+                model: str = "inherit",
+            ) -> dict[str, Any]:
+                if schema is EXECUTOR_SCHEMA:
+                    # Add only a tautological test without prod changes (blocked if verify_red=True)
+                    test_path = expected_wt / "tests" / "test_calc.py"
+                    test_path.write_text(
+                        test_path.read_text(encoding="utf-8")
+                        + "\n    def test_tautology(self) -> None:\n"
+                        "        self.assertTrue(True)\n",
+                        encoding="utf-8",
+                    )
+                    return {
+                        "subtask_index": 0,
+                        "files_changed": ["tests/test_calc.py"],
+                        "test_files_touched": ["tests/test_calc.py"],
+                        "summary": "added test only",
+                    }
+                reviewer_prompts.append(prompt)
+                return {"approved": True, "blocking_issues": [], "lesson_candidate": None}
+
+            try:
+                result = asyncio.run(
+                    run_inner_loop(
+                        {
+                            "repo_root": str(repo),
+                            "plan_path": str(plan_path),
+                            "run_id": run_id,
+                            "verify_red": False,
+                        },
+                        fake_agent,
+                        lambda _name: None,
+                        lambda *_args: None,
+                    )
+                )
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["rollbacks"], 0)
+                self.assertEqual(result["subtasks_passed"], 1)
+                self.assertEqual(len(reviewer_prompts), 1)
+                self.assertNotIn("[verify_red]", reviewer_prompts[0])
+            finally:
+                _remove_worktree_safe(repo, expected_wt)
+
+    def test_inner_loop_cleans_up_worktree_and_branch_when_setup_cmd_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            plan_path = _init_loop_repo(repo)
+
+            manifest_path = repo / ".agents" / "loop.json"
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_data["setup_cmd"] = (
+                f'"{sys.executable}" -c "import sys; print(\'setup boom\'); sys.exit(1)"'
+            )
+            manifest_path.write_text(
+                json.dumps(manifest_data, indent=2) + "\n", encoding="utf-8"
+            )
+            _run_git(repo, "add", ".agents/loop.json")
+            _run_git(repo, "commit", "-m", "add failing setup_cmd")
+
+            run_id = "run-setup-fail"
+            expected_wt = repo / ".agents" / "worktrees" / run_id
+            agent_called = False
+
+            async def fail_if_called(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                nonlocal agent_called
+                agent_called = True
+                raise AssertionError("agent_fn must not be invoked when setup_cmd fails")
+
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    asyncio.run(
+                        run_inner_loop(
+                            {
+                                "repo_root": str(repo),
+                                "plan_path": str(plan_path),
+                                "run_id": run_id,
+                            },
+                            fail_if_called,
+                            lambda _name: None,
+                            lambda *_args: None,
+                        )
+                    )
+                self.assertIn("setup boom", str(ctx.exception))
+                self.assertFalse(agent_called)
+                self.assertFalse(expected_wt.exists())
+                branches = _run_git(
+                    repo, "branch", "--list", f"agy-loop/{run_id}"
+                ).stdout.strip()
+                self.assertEqual(branches, "")
+                self.assertNotIn(
+                    run_id,
+                    _run_git(repo, "worktree", "list", "--porcelain").stdout,
+                )
+                self.assertEqual(_run_git(repo, "status", "--porcelain").stdout.strip(), "")
             finally:
                 _remove_worktree_safe(repo, expected_wt)
 
