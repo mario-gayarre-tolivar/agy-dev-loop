@@ -176,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
 | 1 | Intérprete Python portable, manifiesto multi-stack y nuevos campos de `LoopManifest` | `skills/agy-dev-loop/scripts/core/manifest.py` | `tests/test_manifest.py` | `C1`, `C3`, `C5` | `[x]` |
 | 2 | Entorno hidratado de worktree, teardown seguro y guardián anti-trampa multi-lenguaje | `skills/agy-dev-loop/scripts/core/git_guard.py`, `eval_runner.py` | `tests/test_git_guard.py`, `tests/test_eval_runner.py` | `C2`, `C3`, `C4`, `C5` | `[x]` |
 | 3 | Benchmarks autocontenidos en la skill y dry-run aislado dentro del worktree con `setup_cmd` | `skills/agy-dev-loop/scripts/core/optimizer_guard.py`, `workflow_logic.py` | `tests/test_optimizer_guard.py`, `tests/test_workflow_contracts.py` | `C1`, `C2`, `C4` | `[x]` |
-| 4 | CLI pública (`init`/`doctor`), documentación sin rutas personales y suite de evaluación `C1`–`C6` | `skills/agy-dev-loop/scripts/cli.py`, `SKILL.md`, `README.md` | `tests/test_generalization_eval.py` | `C1`..`C6` | `[ ]` |
+| 4 | CLI pública (`init`/`doctor`), documentación sin rutas personales y suite de evaluación `C1`–`C6` | `skills/agy-dev-loop/scripts/cli.py`, `SKILL.md`, `README.md` | `tests/test_generalization_eval.py` | `C1`..`C6` | `[x]` |
 
 ---
 
@@ -343,7 +343,7 @@ git commit -m "feat(workflow): bundle benchmarks inside skill and isolate dry-ru
 - Consumes: `init_manifest`, `load_manifest`, `detect_stack_manifest`, `verify_manifest_test_cmd` (Task 1), `ensure_clean_repo`, `build_worktree_env` (Task 2), `DEFAULT_BENCHMARKS_ROOT` (Task 3)
 - Produces: `main(argv: list[str] | None = None) -> int` en `skills/agy-dev-loop/scripts/cli.py` con subcomandos `init --repo <path> [--no-dry-run]` y `doctor --repo <path>`; suite de verificación `tests/test_generalization_eval.py` cubriendo `C1` a `C6`.
 
-- [ ] **Step 1: Escribir stub `NotImplementedError` en `skills/agy-dev-loop/scripts/cli.py` y escribir la suite completa `tests/test_generalization_eval.py` para los criterios `C1` a `C6`**
+- [x] **Step 1: Escribir stub `NotImplementedError` en `skills/agy-dev-loop/scripts/cli.py` y escribir la suite completa `tests/test_generalization_eval.py` para los criterios `C1` a `C6`**
 
 ```python
 class GeneralizationEvalTests(unittest.TestCase):
@@ -355,19 +355,19 @@ class GeneralizationEvalTests(unittest.TestCase):
     def test_c6_cli_init_doctor_and_self_contained_benchmarks(self): ...
 ```
 
-- [ ] **Step 2: Ejecutar test runner para verificar estado `RED`**
+- [x] **Step 2: Ejecutar test runner para verificar estado `RED`**
 
 Run: `python3 -m unittest tests/test_generalization_eval.py -v`
 Expected: FAIL / ERROR con `NotImplementedError: Not implemented` y rutas personales pendientes en docs
 
-- [ ] **Step 3: Implementar `skills/agy-dev-loop/scripts/cli.py` y actualizar `skills/agy-dev-loop/SKILL.md` y `README.md` eliminando toda ruta personal**
+- [x] **Step 3: Implementar `skills/agy-dev-loop/scripts/cli.py` y actualizar `skills/agy-dev-loop/SKILL.md` y `README.md` eliminando toda ruta personal**
 
-- [ ] **Step 4: Ejecutar la suite completa en `python3` (3.12) y `python` (3.15) para verificar estado `GREEN`**
+- [x] **Step 4: Ejecutar la suite completa en `python3` (3.12) y `python` (3.15) para verificar estado `GREEN`**
 
 Run: `python3 -m unittest discover -s tests -v && python -m unittest discover -s tests -v`
 Expected: PASS (`OK` en todas las suites de `tests/` incluyendo `test_generalization_eval.py`)
 
-- [ ] **Step 5: Commit de Task 4**
+- [x] **Step 5: Commit de Task 4**
 
 ```bash
 git add skills/agy-dev-loop/ README.md tests/test_generalization_eval.py docs/plans/2026-11-20-agy-dev-loop-generalization.md
